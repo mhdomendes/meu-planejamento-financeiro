@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   ReceiptText,
@@ -22,11 +22,49 @@ import {
 } from "lucide-react";
 import { ResponsiveContainer, PieChart, Pie, Cell, Tooltip } from "recharts";
 
-const categories = [
-  { name: "Despesas essenciais", value: 45, color: "#2563eb", amount: 1800 },
-  { name: "Estilo de vida", value: 25, color: "#8b5cf6", amount: 1000 },
-  { name: "Investimentos", value: 30, color: "#10b981", amount: 1200 },
-];
+type MonthlyBudget = {
+  category: string;
+  normal_percentage: number;
+  extra_percentage: number;
+  normal_amount: number;
+  extra_amount: number;
+  total_budget: number;
+};
+
+type MonthlyPlan = {
+  id: number;
+  month: string;
+  normal_income: number;
+  extra_income: number;
+  budgets: MonthlyBudget[];
+};
+
+const categoryColors: Record<string, string> = {
+  "Despesas essenciais": "#2563eb",
+  "Estilo de vida": "#8b5cf6",
+  Investimentos: "#10b981",
+};
+
+async function fetchMonthlyPlan(month: string): Promise<MonthlyPlan | null> {
+  const response = await fetch(
+    `http://localhost:8000/api/monthly-plans/${month}`,
+    {
+      headers: { Accept: "application/json" },
+    },
+  );
+
+  if (response.status === 404) {
+    return null;
+  }
+
+  if (!response.ok) {
+    throw new Error("Não foi possível carregar o planejamento mensal.");
+  }
+
+  const result = await response.json();
+  return result.data as MonthlyPlan;
+}
+
 
 const expenses = [
   { name: "Mercado", category: "Despesas essenciais", value: 450 },
@@ -64,6 +102,9 @@ const currency = (value: number) =>
 
 function App() {
   const [monthOffset, setMonthOffset] = useState(0);
+  const [monthlyPlan, setMonthlyPlan] = useState<MonthlyPlan | null>(null);
+  const [loadingPlan, setLoadingPlan] = useState(true);
+  const [planError, setPlanError] = useState("");
   const [activePage, setActivePage] = useState("Dashboard");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [darkMode, setDarkMode] = useState(() => {
