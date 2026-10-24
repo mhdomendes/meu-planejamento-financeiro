@@ -5,6 +5,8 @@ namespace Tests\Feature;
 use App\Models\BalanceAccount;
 use App\Models\BalanceMovement;
 use App\Models\Category;
+use App\Models\Expense;
+use App\Models\MonthlyPlan;
 use App\Models\PurchaseGoal;
 use App\Services\MonthlyPlanService;
 use Database\Seeders\BalanceAccountSeeder;
@@ -161,6 +163,169 @@ class FinanceModulesTest extends TestCase
             'amount' => 10,
         ])->assertUnprocessable()
             ->assertJsonValidationErrors('category_id');
+    }
+
+    public function test_it_generates_monthly_quarterly_and_limited_installment_expenses(): void
+    {
+        foreach (['2026-11-01', '2026-12-01', '2027-01-01', '2027-02-01', '2027-03-01'] as $month) {
+            app(MonthlyPlanService::class)->create($month, 4500, 0);
+        }
+        $category = Category::query()->where('name', 'Despesas essenciais')->firstOrFail();
+
+        $monthly = $this->postJson('/api/expenses', [
+            'month' => '2026-11-01',
+            'category_id' => $category->id,
+            'description' => 'Academia',
+            'amount' => 80,
+            'recurrence_type' => 'recurring',
+            'repeat_every_months' => 1,
+        ])->assertCreated()
+            ->assertJsonPath('data.recurrence_type', 'recurring');
+
+        $this->assertDatabaseHas('expenses', [
+            'monthly_plan_id' => MonthlyPlan::query()->whereDate('month', '2026-12-01')->value('id'),
+            'description' => 'Academia',
+        ]);
+
+        $quarterly = $this->postJson('/api/expenses', [
+            'month' => '2026-11-01',
+            'category_id' => $category->id,
+            'description' => 'Seguro trimestral',
+            'amount' => 300,
+            'recurrence_type' => 'recurring',
+            'repeat_every_months' => 3,
+        ])->assertCreated();
+        $quarterlyId = $quarterly->json('data.id');
+        $quarterlySeriesId = Expense::query()->findOrFail($quarterlyId)->recurring_expense_id;
+
+        $this->assertDatabaseHas('expenses', [
+            'monthly_plan_id' => MonthlyPlan::query()->whereDate('month', '2027-02-01')->value('id'),
+            'recurring_expense_id' => $quarterlySeriesId,
+        ]);
+        $this->assertDatabaseMissing('expenses', [
+            'monthly_plan_id' => MonthlyPlan::query()->whereDate('month', '2026-12-01')->value('id'),
+            'recurring_expense_id' => $quarterlySeriesId,
+        ]);
+
+        $installments = $this->postJson('/api/expenses', [
+            'month' => '2026-11-01',
+            'category_id' => $category->id,
+            'description' => 'Notebook parcelado',
+            'amount' => 250,
+            'recurrence_type' => 'installment',
+            'installments_total' => 3,
+        ])->assertCreated()
+            ->assertJsonPath('data.installment_number', 1)
+            ->assertJsonPath('data.installments_total', 3);
+        $installmentSeriesId = Expense::query()->findOrFail($installments->json('data.id'))->recurring_expense_id;
+
+        $this->assertSame(3, Expense::query()->where('recurring_expense_id', $installmentSeriesId)->count());
+        $this->assertDatabaseMissing('expenses', [
+            'monthly_plan_id' => MonthlyPlan::query()->whereDate('month', '2027-02-01')->value('id'),
+            'recurring_expense_id' => $installmentSeriesId,
+        ]);
+    }
+
+    public function test_editing_a_recurring_expense_updates_the_selected_and_future_occurrences_only(): void
+    {
+        foreach (['2026-11-01', '2026-12-01', '2027-01-01'] as $month) {
+            app(MonthlyPlanService::class)->create($month, 4500, 0);
+        }
+        $category = Category::query()->where('name', 'Despesas essenciais')->firstOrFail();
+        $this->postJson('/api/expenses', [
+            'month' => '2026-11-01',
+            'category_id' => $category->id,
+            'description' => 'Internet',
+            'amount' => 100,
+            'recurrence_type' => 'recurring',
+            'repeat_every_months' => 1,
+        ])->assertCreated();
+        $december = MonthlyPlan::query()
+            ->whereDate('month', '2026-12-01')
+            ->firstOrFail()
+            ->expenses()
+            ->where('description', 'Internet')
+            ->firstOrFail();
+
+        $this->patchJson("/api/expenses/{$december->id}", [
+            'category_id' => $category->id,
+            'description' => 'Internet atualizado',
+            'amount' => 120,
+            'recurrence_type' => 'recurring',
+            'repeat_every_months' => 1,
+        ])->assertOk()
+            ->assertJsonPath('data.description', 'Internet atualizado');
+
+        $this->assertDatabaseHas('expenses', [
+            'monthly_plan_id' => MonthlyPlan::query()->whereDate('month', '2026-11-01')->value('id'),
+            'description' => 'Internet',
+            'amount' => '100.00',
+        ]);
+        $this->assertDatabaseHas('expenses', [
+            'monthly_plan_id' => MonthlyPlan::query()->whereDate('month', '2027-01-01')->value('id'),
+            'description' => 'Internet atualizado',
+            'amount' => '120.00',
+        ]);
+    }
+
+    public function test_editing_a_one_time_expense_to_recurrent_keeps_one_occurrence_in_the_month(): void
+    {
+        foreach (['2026-11-01', '2026-12-01'] as $month) {
+            app(MonthlyPlanService::class)->create($month, 4500, 0);
+        }
+        $category = Category::query()->where('name', 'Despesas essenciais')->firstOrFail();
+        $created = $this->postJson('/api/expenses', [
+            'month' => '2026-11-01',
+            'category_id' => $category->id,
+            'description' => 'Conta de água',
+            'amount' => 50,
+        ])->assertCreated();
+        $expenseId = $created->json('data.id');
+
+        $this->patchJson("/api/expenses/{$expenseId}", [
+            'category_id' => $category->id,
+            'description' => 'Conta de água',
+            'amount' => 50,
+            'recurrence_type' => 'recurring',
+            'repeat_every_months' => 1,
+        ])->assertOk();
+
+        $this->assertSame(1, MonthlyPlan::query()
+            ->whereDate('month', '2026-11-01')
+            ->firstOrFail()
+            ->expenses()
+            ->where('description', 'Conta de água')
+            ->count());
+        $this->assertSame(1, MonthlyPlan::query()
+            ->whereDate('month', '2026-12-01')
+            ->firstOrFail()
+            ->expenses()
+            ->where('description', 'Conta de água')
+            ->count());
+    }
+
+    public function test_deleting_a_recurring_expense_occurrence_does_not_regenerate_it(): void
+    {
+        $plan = app(MonthlyPlanService::class)->create('2026-11-01', 4500, 0);
+        $category = Category::query()->where('name', 'Despesas essenciais')->firstOrFail();
+        $created = $this->postJson('/api/expenses', [
+            'month' => '2026-11-01',
+            'category_id' => $category->id,
+            'description' => 'Assinatura',
+            'amount' => 25,
+            'recurrence_type' => 'recurring',
+            'repeat_every_months' => 1,
+        ])->assertCreated();
+        $expenseId = $created->json('data.id');
+
+        $this->deleteJson("/api/expenses/{$expenseId}")->assertOk();
+        $this->getJson('/api/expenses?month=2026-11-01')
+            ->assertOk()
+            ->assertJsonCount(0, 'data');
+
+        $this->assertDatabaseHas('recurring_expense_exclusions', [
+            'monthly_plan_id' => $plan->id,
+        ]);
     }
 
     public function test_it_updates_category_distribution_only_when_totals_are_one_hundred(): void

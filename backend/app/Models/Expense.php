@@ -31,4 +31,9 @@ class Expense extends Model
     {
         return $this->belongsTo(Category::class);
     }
+
+    public function recurringExpense(): BelongsTo
+    {
+        return $this->belongsTo(RecurringExpense::class);
+    }
 }

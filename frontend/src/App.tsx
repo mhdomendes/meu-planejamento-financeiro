@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDownRight,
   ArrowUpRight,
@@ -8,6 +8,7 @@ import {
   CircleDollarSign,
   LayoutDashboard,
   Moon,
+  Pencil,
   Plus,
   ReceiptText,
   Settings,
@@ -53,6 +54,10 @@ type Expense = {
   month: string;
   date: string;
   created_at: string;
+  recurrence_type: "none" | "recurring" | "installment";
+  repeat_every_months: number | null;
+  installments_total: number | null;
+  installment_number: number | null;
 };
 
 type Movement = {
@@ -238,15 +243,16 @@ function App() {
   useEffect(() => {
     let active = true;
 
-    Promise.all([
-      apiRequest<MonthlyPlan>("/monthly-plans/ensure", {
+    apiRequest<MonthlyPlan>("/monthly-plans/ensure", {
         method: "POST",
         body: JSON.stringify({ month }),
-      }).then((result) => result.data),
-      apiRequest<Expense[]>(`/expenses?month=${month}`).then(
-        (result) => result.data,
-      ),
-    ])
+      })
+      .then((result) => {
+        if (active) setPlan(result.data);
+        return apiRequest<Expense[]>(`/expenses?month=${month}`).then(
+          (expensesResult) => [result.data, expensesResult.data] as const,
+        );
+      })
       .then(([loadedPlan, loadedExpenses]) => {
         if (!active) return;
         setPlan(loadedPlan);
@@ -274,19 +280,22 @@ function App() {
   const totalFunds = funds.reduce((total, fund) => total + fund.balance, 0);
   const budgets = useMemo(
     () =>
-      (plan?.budgets ?? []).map((budget, index) => ({
+      (plan?.budgets ?? []).map((budget) => ({
         ...budget,
         normal_percentage: Number(budget.normal_percentage),
         extra_percentage: Number(budget.extra_percentage),
         normal_amount: Number(budget.normal_amount),
         extra_amount: Number(budget.extra_amount),
         total_budget: Number(budget.total_budget),
-        color: categoryColors[index % categoryColors.length],
+        color: categoryColors[
+          Math.max(0, categories.findIndex((category) => category.name === budget.category)) %
+            categoryColors.length
+        ],
         spent: expenses
           .filter((expense) => expense.category === budget.category)
           .reduce((total, expense) => total + Number(expense.amount), 0),
       })),
-    [expenses, plan],
+    [categories, expenses, plan],
   );
 
   async function handleUpdatePlan(event: FormEvent<HTMLFormElement>): Promise<boolean> {
@@ -340,7 +349,10 @@ function App() {
     }
   }
 
-  async function handleCreateExpense(event: FormEvent<HTMLFormElement>) {
+  async function handleSaveExpense(
+    event: FormEvent<HTMLFormElement>,
+    editingExpense: Expense | null,
+  ) {
     event.preventDefault();
     setError("");
     setNotice("");
@@ -348,20 +360,34 @@ function App() {
     const values = new FormData(form);
 
     try {
-      const result = await apiRequest<Expense>("/expenses", {
-        method: "POST",
-        body: JSON.stringify({
-          month,
-          category_id: Number(values.get("category_id")),
-          description: values.get("description"),
-          amount: Number(values.get("amount")),
-        }),
-      });
-      setExpenses((current) => [result.data, ...current]);
-      form.reset();
-      setNotice("Despesa cadastrada.");
+      const result = await apiRequest<Expense>(
+        editingExpense ? `/expenses/${editingExpense.id}` : "/expenses",
+        {
+          method: editingExpense ? "PATCH" : "POST",
+          body: JSON.stringify({
+            ...(!editingExpense ? { month } : {}),
+            category_id: Number(values.get("category_id")),
+            description: values.get("description"),
+            amount: Number(values.get("amount")),
+            recurrence_type: values.get("recurrence_type"),
+            repeat_every_months: Number(values.get("repeat_every_months") ?? 1),
+            installments_total: values.get("installments_total")
+              ? Number(values.get("installments_total"))
+              : null,
+          }),
+        },
+      );
+      setExpenses((current) =>
+        editingExpense
+          ? current.map((item) => item.id === result.data.id ? result.data : item)
+          : [result.data, ...current],
+      );
+      if (!editingExpense) form.reset();
+      setNotice(editingExpense ? "Despesa atualizada." : "Despesa cadastrada.");
+      return true;
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Não foi possível cadastrar a despesa.");
+      setError(cause instanceof Error ? cause.message : "Não foi possível salvar a despesa.");
+      return false;
     }
   }
 
@@ -604,12 +630,13 @@ function App() {
 
           {activePage === "Despesas" && (
             <ExpensesPage
+              key={month}
               monthLabel={monthLabel}
               loading={loading}
               plan={plan}
               expenses={expenses}
               categories={categories}
-              onCreate={handleCreateExpense}
+              onSave={handleSaveExpense}
               onDelete={handleDeleteExpense}
             />
           )}
@@ -902,7 +929,7 @@ function ExpensesPage({
   plan,
   expenses,
   categories,
-  onCreate,
+  onSave,
   onDelete,
 }: {
   monthLabel: string;
@@ -910,12 +937,42 @@ function ExpensesPage({
   plan: MonthlyPlan | null;
   expenses: Expense[];
   categories: Category[];
-  onCreate: (event: FormEvent<HTMLFormElement>) => void;
+  onSave: (
+    event: FormEvent<HTMLFormElement>,
+    editingExpense: Expense | null,
+  ) => Promise<boolean>;
   onDelete: (expense: Expense) => void;
 }) {
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [recurrenceType, setRecurrenceType] = useState<Expense["recurrence_type"]>("none");
+  const expenseFormRef = useRef<HTMLFormElement>(null);
+  const expenseCardRef = useRef<HTMLDivElement>(null);
   const availableCategories = plan
     ? categories.filter((category) => plan.budgets.some((budget) => budget.category === category.name))
     : [];
+  const colorForCategory = (categoryId: number) => {
+    const index = categories.findIndex((category) => category.id === categoryId);
+    return categoryColors[Math.max(0, index) % categoryColors.length];
+  };
+
+  function startEditing(expense: Expense) {
+    setEditingExpense(expense);
+    setRecurrenceType(expense.recurrence_type);
+  }
+
+  function cancelEditing() {
+    setEditingExpense(null);
+    setRecurrenceType("none");
+  }
+
+  useEffect(() => {
+    if (!editingExpense) return;
+
+    expenseCardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    expenseFormRef.current?.querySelector<HTMLInputElement>('[name="description"]')?.focus({
+      preventScroll: true,
+    });
+  }, [editingExpense]);
 
   return (
     <>
@@ -923,23 +980,109 @@ function ExpensesPage({
       {!plan ? (
         <EmptyState message="Crie o planejamento mensal antes de lançar despesas." />
       ) : (
-        <Card title="Nova despesa" subtitle="O lançamento será vinculado ao orçamento da categoria">
-          <form onSubmit={onCreate} className="grid gap-4 md:grid-cols-4">
-            <Field label="Descrição" name="description" required maxLength={255} />
+        <div ref={expenseCardRef} className="scroll-mt-28">
+          <Card
+            title={editingExpense ? "Editar despesa" : "Nova despesa"}
+            subtitle={
+              editingExpense && editingExpense.recurrence_type !== "none"
+                ? "A edição também será aplicada às próximas ocorrências da série."
+                : editingExpense
+                  ? "Atualize os dados deste lançamento."
+                  : "O lançamento será vinculado ao orçamento da categoria"
+            }
+          >
+            <form
+              ref={expenseFormRef}
+              key={editingExpense?.id ?? "new-expense"}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void onSave(event, editingExpense).then((saved) => {
+                  if (saved) cancelEditing();
+                });
+              }}
+              className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
+            >
+            <Field
+              label="Descrição"
+              name="description"
+              required
+              maxLength={255}
+              defaultValue={editingExpense?.description}
+            />
             <label className="grid gap-1.5 text-sm font-medium text-slate-700">
               Categoria
-              <select name="category_id" required className={inputClass}>
+              <select
+                name="category_id"
+                required
+                className={inputClass}
+                defaultValue={editingExpense?.category_id ?? availableCategories[0]?.id}
+              >
                 {availableCategories.map((category) => (
                   <option key={category.id} value={category.id}>{category.name}</option>
                 ))}
               </select>
             </label>
-            <Field label="Valor" name="amount" type="number" min="0.01" step="0.01" required />
-            <button className="self-end rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700">
-              <Plus size={16} className="mr-1 inline" /> Adicionar despesa
-            </button>
-          </form>
-        </Card>
+            <Field
+              label="Valor"
+              name="amount"
+              type="number"
+              min="0.01"
+              step="0.01"
+              required
+              defaultValue={editingExpense?.amount}
+            />
+            <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+              Tipo de lançamento
+              <select
+                name="recurrence_type"
+                className={inputClass}
+                value={recurrenceType}
+                onChange={(event) => setRecurrenceType(event.target.value as Expense["recurrence_type"])}
+              >
+                <option value="none">Não recorrente</option>
+                <option value="recurring">Recorrente</option>
+                <option value="installment">Parcelado</option>
+              </select>
+            </label>
+            {recurrenceType === "recurring" && (
+              <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                Frequência
+                <select
+                  name="repeat_every_months"
+                  className={inputClass}
+                  defaultValue={editingExpense?.repeat_every_months ?? 1}
+                >
+                  <option value="1">Mensal</option>
+                  <option value="3">A cada três meses</option>
+                </select>
+              </label>
+            )}
+            {recurrenceType === "installment" && (
+              <Field
+                label="Total de parcelas"
+                name="installments_total"
+                type="number"
+                min="2"
+                max="120"
+                step="1"
+                required
+                defaultValue={editingExpense?.installments_total ?? 2}
+              />
+            )}
+            <div className="flex items-end gap-2">
+              <button className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700">
+                {editingExpense ? <Pencil size={16} className="mr-1 inline" /> : <Plus size={16} className="mr-1 inline" />}
+                {editingExpense ? "Salvar edição" : "Adicionar despesa"}
+              </button>
+              {editingExpense && (
+                <button type="button" onClick={cancelEditing} className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50">
+                  Cancelar
+                </button>
+              )}
+            </div>
+            </form>
+          </Card>
+        </div>
       )}
 
       <Card title="Despesas do mês" subtitle={`${expenses.length} lançamento(s)`}>
@@ -947,18 +1090,53 @@ function ExpensesPage({
           <EmptyState message="Nenhuma despesa cadastrada para este mês." />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[520px] text-left text-sm">
+            <table className="w-full min-w-[800px] text-left text-sm">
               <thead className="text-xs uppercase text-slate-500">
-                <tr><th className="pb-3">Descrição</th><th className="pb-3">Categoria</th><th className="pb-3">Data</th><th className="pb-3 text-right">Valor</th><th /></tr>
+                <tr>
+                  <th className="pb-3 pl-3">Descrição</th>
+                  <th className="pb-3">Categoria</th>
+                  <th className="pb-3">Recorrência</th>
+                  <th className="pb-3">Parcelado</th>
+                  <th className="pb-3">Data</th>
+                  <th className="pb-3 text-right">Valor</th>
+                  <th />
+                </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {expenses.map((expense) => (
-                  <tr key={expense.id}>
-                    <td className="py-3 font-medium">{expense.description}</td>
-                    <td className="py-3">{expense.category}</td>
+                  <tr
+                    key={expense.id}
+                    className="transition-colors hover:bg-slate-50/80"
+                    style={{ borderLeft: `4px solid ${colorForCategory(expense.category_id)}` }}
+                  >
+                    <td className="py-3 pl-3 font-medium">{expense.description}</td>
+                    <td className="py-3">
+                      <span
+                        className="rounded-full px-2.5 py-1 text-xs font-semibold"
+                        style={{
+                          color: colorForCategory(expense.category_id),
+                          backgroundColor: `${colorForCategory(expense.category_id)}1a`,
+                        }}
+                      >
+                        {expense.category}
+                      </span>
+                    </td>
+                    <td className="py-3 text-slate-600">
+                      {expense.recurrence_type === "recurring"
+                        ? expense.repeat_every_months === 3 ? "A cada 3 meses" : "Mensal"
+                        : "—"}
+                    </td>
+                    <td className="py-3 text-slate-600">
+                      {expense.recurrence_type === "installment"
+                        ? `${expense.installment_number}/${expense.installments_total}`
+                        : "—"}
+                    </td>
                     <td className="py-3 text-slate-500">{new Date(`${expense.date}T12:00:00`).toLocaleDateString("pt-BR")}</td>
                     <td className="py-3 text-right font-semibold">{currency(Number(expense.amount))}</td>
                     <td className="py-3 text-right">
+                      <button type="button" onClick={() => startEditing(expense)} aria-label={`Editar ${expense.description}`} className="rounded-lg p-2 text-slate-400 hover:bg-blue-50 hover:text-blue-600">
+                        <Pencil size={16} />
+                      </button>
                       <button type="button" onClick={() => onDelete(expense)} aria-label={`Excluir ${expense.description}`} className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600">
                         <Trash2 size={16} />
                       </button>
