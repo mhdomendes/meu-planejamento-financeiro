@@ -12,6 +12,7 @@ class PurchaseGoal extends Model
         'name',
         'balance_account_id',
         'target_amount',
+        'priority',
         'image_url',
         'active',
     ];
@@ -20,6 +21,7 @@ class PurchaseGoal extends Model
     {
         return [
             'target_amount' => 'decimal:2',
+            'priority' => 'integer',
             'active' => 'boolean',
         ];
     }

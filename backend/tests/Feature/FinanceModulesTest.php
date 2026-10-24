@@ -3,11 +3,15 @@
 namespace Tests\Feature;
 
 use App\Models\BalanceAccount;
+use App\Models\BalanceMovement;
 use App\Models\Category;
+use App\Models\PurchaseGoal;
 use App\Services\MonthlyPlanService;
 use Database\Seeders\BalanceAccountSeeder;
 use Database\Seeders\CategorySeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
 class FinanceModulesTest extends TestCase
@@ -141,5 +145,85 @@ class FinanceModulesTest extends TestCase
             ->assertOk()
             ->assertJsonPath('data.0.goals.0.current_amount', 250)
             ->assertJsonPath('data.0.balance', 250);
+    }
+
+    public function test_it_orders_goals_within_a_fund_and_uploads_goal_images(): void
+    {
+        Storage::fake('public');
+        $account = BalanceAccount::query()->firstOrFail();
+
+        $firstGoalId = $this->postJson('/api/goals', [
+            'name' => 'Reserva',
+            'balance_account_id' => $account->id,
+            'target_amount' => 1000,
+        ])->assertCreated()
+            ->assertJsonPath('data.priority', 1)
+            ->json('data.id');
+
+        $secondGoal = $this->post('/api/goals', [
+            'name' => 'Viagem',
+            'balance_account_id' => $account->id,
+            'target_amount' => 2500,
+            'priority' => 1,
+            'image' => UploadedFile::fake()->createWithContent(
+                'viagem.png',
+                base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p6kAAAAASUVORK5CYII=')
+            ),
+        ])->assertCreated();
+
+        $secondGoalId = $secondGoal->json('data.id');
+        $imagePath = PurchaseGoal::query()->findOrFail($secondGoalId)->image_url;
+
+        $secondGoal->assertJsonPath('data.priority', 1)
+            ->assertJsonPath('data.image_url', "/api/goals/{$secondGoalId}/image");
+        Storage::disk('public')->assertExists($imagePath);
+        $this->get("/api/goals/{$secondGoalId}/image")->assertOk();
+
+        $this->assertDatabaseHas('purchase_goals', [
+            'id' => $firstGoalId,
+            'priority' => 2,
+        ]);
+
+        $this->patchJson("/api/goals/{$secondGoalId}", ['priority' => 2])
+            ->assertOk()
+            ->assertJsonPath('data.priority', 2);
+
+        $this->assertDatabaseHas('purchase_goals', [
+            'id' => $firstGoalId,
+            'priority' => 1,
+        ]);
+    }
+
+    public function test_it_clears_existing_goals_without_deleting_the_movement_history(): void
+    {
+        Storage::fake('public');
+        $account = BalanceAccount::query()->firstOrFail();
+        $goal = PurchaseGoal::query()->create([
+            'name' => 'Viagem',
+            'balance_account_id' => $account->id,
+            'target_amount' => 2500,
+            'priority' => 1,
+            'image_url' => 'goals/viagem.png',
+        ]);
+        Storage::disk('public')->put('goals/viagem.png', 'image');
+        $movement = BalanceMovement::query()->create([
+            'balance_account_id' => $account->id,
+            'purchase_goal_id' => $goal->id,
+            'type' => 'deposit',
+            'amount' => 100,
+        ]);
+
+        $this->artisan('goals:clear-existing')
+            ->expectsConfirmation('Confirma a remoção de todas as metas existentes?', 'yes')
+            ->expectsOutput('Metas removidas. O histórico de movimentações foi preservado.')
+            ->assertExitCode(0);
+
+        $this->assertDatabaseMissing('purchase_goals', ['id' => $goal->id]);
+        $this->assertDatabaseHas('balance_movements', [
+            'id' => $movement->id,
+            'purchase_goal_id' => null,
+            'amount' => 100,
+        ]);
+        Storage::disk('public')->assertMissing('goals/viagem.png');
     }
 }

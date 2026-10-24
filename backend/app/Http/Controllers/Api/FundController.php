@@ -9,7 +9,11 @@ use App\Models\PurchaseGoal;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
+use RuntimeException;
+use Symfony\Component\HttpFoundation\StreamedResponse;
+use Throwable;
 
 class FundController extends Controller
 {
@@ -31,6 +35,7 @@ class FundController extends Controller
                     ->map(fn (BalanceMovement $movement) => $this->serializeMovement($movement))
                     ->values(),
                 'goals' => $account->purchaseGoals
+                    ->sortBy('priority')
                     ->map(fn (PurchaseGoal $goal) => $this->serializeGoal($goal))
                     ->values(),
             ]),
@@ -129,9 +134,59 @@ class FundController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'balance_account_id' => ['required', 'integer', 'exists:balance_accounts,id'],
             'target_amount' => ['required', 'numeric', 'decimal:0,2', 'gt:0', 'max:9999999999.99'],
+            'priority' => ['sometimes', 'required', 'integer', 'min:1'],
+            'image' => ['nullable', 'image', 'mimes:jpeg,png,webp,gif', 'max:5120'],
         ]);
 
-        $goal = PurchaseGoal::query()->create($validated);
+        $account = BalanceAccount::query()->findOrFail($validated['balance_account_id']);
+        $goalCount = $account->purchaseGoals()->count();
+        $priority = (int) ($validated['priority'] ?? $goalCount + 1);
+
+        if ($priority > $goalCount + 1) {
+            throw ValidationException::withMessages([
+                'priority' => 'A prioridade deve estar entre 1 e a próxima posição disponível no fundo.',
+            ]);
+        }
+
+        $image = $validated['image'] ?? null;
+        $imagePath = $image
+            ? Storage::disk('public')->putFile('goals', $image)
+            : null;
+
+        if ($image && ! $imagePath) {
+            throw new RuntimeException('Não foi possível salvar a imagem da meta.');
+        }
+
+        try {
+            $goal = DB::transaction(function () use ($account, $validated, $priority, $imagePath): PurchaseGoal {
+                $lockedAccount = BalanceAccount::query()
+                    ->lockForUpdate()
+                    ->findOrFail($account->id);
+
+                if ($priority > $lockedAccount->purchaseGoals()->count() + 1) {
+                    throw ValidationException::withMessages([
+                        'priority' => 'A prioridade selecionada não está mais disponível neste fundo.',
+                    ]);
+                }
+
+                $lockedAccount->purchaseGoals()
+                    ->where('priority', '>=', $priority)
+                    ->increment('priority');
+
+                return $lockedAccount->purchaseGoals()->create([
+                    'name' => $validated['name'],
+                    'target_amount' => $validated['target_amount'],
+                    'priority' => $priority,
+                    'image_url' => $imagePath,
+                ]);
+            });
+        } catch (Throwable $exception) {
+            if ($imagePath) {
+                Storage::disk('public')->delete($imagePath);
+            }
+
+            throw $exception;
+        }
 
         return response()->json([
             'message' => 'Meta criada com sucesso.',
@@ -139,15 +194,99 @@ class FundController extends Controller
         ], 201);
     }
 
+    public function showGoalImage(PurchaseGoal $goal): StreamedResponse
+    {
+        abort_unless(
+            $goal->image_url && Storage::disk('public')->exists($goal->image_url),
+            404
+        );
+
+        return Storage::disk('public')->response($goal->image_url);
+    }
+
     public function updateGoal(Request $request, PurchaseGoal $goal): JsonResponse
     {
         $validated = $request->validate([
             'name' => ['sometimes', 'required', 'string', 'max:255'],
             'target_amount' => ['sometimes', 'required', 'numeric', 'decimal:0,2', 'gt:0', 'max:9999999999.99'],
+            'priority' => [
+                'sometimes',
+                'required',
+                'integer',
+                'min:1',
+            ],
             'active' => ['sometimes', 'required', 'boolean'],
+            'image' => ['sometimes', 'nullable', 'image', 'mimes:jpeg,png,webp,gif', 'max:5120'],
         ]);
 
-        $goal->update($validated);
+        $image = $validated['image'] ?? null;
+        unset($validated['image']);
+        $newImagePath = $image
+            ? Storage::disk('public')->putFile('goals', $image)
+            : null;
+
+        if ($image && ! $newImagePath) {
+            throw new RuntimeException('Não foi possível salvar a imagem da meta.');
+        }
+
+        $oldImagePath = $goal->image_url;
+
+        try {
+            DB::transaction(function () use ($goal, $validated, $newImagePath): void {
+                BalanceAccount::query()
+                    ->lockForUpdate()
+                    ->findOrFail($goal->balance_account_id);
+                $goal->refresh();
+
+                if (isset($validated['priority'])) {
+                    $newPriority = (int) $validated['priority'];
+                    $goalCount = PurchaseGoal::query()
+                        ->where('balance_account_id', $goal->balance_account_id)
+                        ->count();
+
+                    if ($newPriority > $goalCount) {
+                        throw ValidationException::withMessages([
+                            'priority' => 'A prioridade deve corresponder a uma posição existente neste fundo.',
+                        ]);
+                    }
+                } else {
+                    $newPriority = $goal->priority;
+                }
+
+                if ($newPriority !== $goal->priority) {
+                    $accountGoals = PurchaseGoal::query()
+                        ->where('balance_account_id', $goal->balance_account_id);
+
+                    if ($newPriority < $goal->priority) {
+                        $accountGoals
+                            ->where('priority', '>=', $newPriority)
+                            ->where('priority', '<', $goal->priority)
+                            ->increment('priority');
+                    } else {
+                        $accountGoals
+                            ->where('priority', '>', $goal->priority)
+                            ->where('priority', '<=', $newPriority)
+                            ->decrement('priority');
+                    }
+                }
+
+                $goal->update([
+                    ...$validated,
+                    'priority' => $newPriority,
+                    ...($newImagePath ? ['image_url' => $newImagePath] : []),
+                ]);
+            });
+        } catch (Throwable $exception) {
+            if ($newImagePath) {
+                Storage::disk('public')->delete($newImagePath);
+            }
+
+            throw $exception;
+        }
+
+        if ($newImagePath && $oldImagePath) {
+            Storage::disk('public')->delete($oldImagePath);
+        }
 
         return response()->json([
             'message' => 'Meta atualizada com sucesso.',
@@ -204,6 +343,10 @@ class FundController extends Controller
             'name' => $goal->name,
             'balance_account_id' => $goal->balance_account_id,
             'target_amount' => $goal->target_amount,
+            'priority' => $goal->priority,
+            'image_url' => $goal->image_url
+                ? "/api/goals/{$goal->id}/image"
+                : null,
             'current_amount' => $this->goalBalance($goal),
             'active' => $goal->active,
         ];

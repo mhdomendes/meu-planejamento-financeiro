@@ -7,9 +7,11 @@ import {
   ChevronRight,
   CircleDollarSign,
   LayoutDashboard,
+  Moon,
   Plus,
   ReceiptText,
   Settings,
+  Sun,
   Trash2,
   Wallet,
 } from "lucide-react";
@@ -68,6 +70,8 @@ type Goal = {
   name: string;
   balance_account_id: number;
   target_amount: number;
+  priority: number;
+  image_url: string | null;
   current_amount: number;
   active: boolean;
 };
@@ -113,7 +117,11 @@ async function apiRequest<T>(
 ): Promise<ApiResponse<T>> {
   const headers = new Headers(init.headers);
   headers.set("Accept", "application/json");
-  if (init.body && !headers.has("Content-Type")) {
+  if (
+    init.body &&
+    !(init.body instanceof FormData) &&
+    !headers.has("Content-Type")
+  ) {
     headers.set("Content-Type", "application/json");
   }
 
@@ -151,6 +159,9 @@ const currency = (value: number) =>
   });
 
 function App() {
+  const [darkMode, setDarkMode] = useState(
+    () => localStorage.getItem("financeiro-theme") === "dark",
+  );
   const [selectedMonth, setSelectedMonth] = useState({
     year: today.getFullYear(),
     month: today.getMonth() + 1,
@@ -163,6 +174,11 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", darkMode);
+    localStorage.setItem("financeiro-theme", darkMode ? "dark" : "light");
+  }, [darkMode]);
 
   const month = `${selectedMonth.year}-${String(selectedMonth.month).padStart(2, "0")}-01`;
   const monthLabel = new Intl.DateTimeFormat("pt-BR", {
@@ -379,21 +395,37 @@ function App() {
     setNotice("");
     const form = event.currentTarget;
     const values = new FormData(form);
+    const image = values.get("image");
+    if (image instanceof File && image.size === 0) {
+      values.delete("image");
+    }
 
     try {
       await apiRequest<Goal>("/goals", {
         method: "POST",
-        body: JSON.stringify({
-          name: values.get("name"),
-          balance_account_id: Number(values.get("balance_account_id")),
-          target_amount: Number(values.get("target_amount")),
-        }),
+        body: values,
       });
       await loadFunds();
       form.reset();
       setNotice("Meta criada.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Não foi possível criar a meta.");
+    }
+  }
+
+  async function handleChangeGoalPriority(goal: Goal, priority: number) {
+    setError("");
+    setNotice("");
+
+    try {
+      await apiRequest<Goal>(`/goals/${goal.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ priority }),
+      });
+      await loadFunds();
+      setNotice("Prioridade da meta atualizada.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível atualizar a prioridade.");
     }
   }
 
@@ -520,6 +552,16 @@ function App() {
               <ChevronRight size={17} />
             </button>
           </div>
+          <button
+            type="button"
+            aria-label={darkMode ? "Ativar modo claro" : "Ativar modo escuro"}
+            aria-pressed={darkMode}
+            title={darkMode ? "Ativar modo claro" : "Ativar modo escuro"}
+            onClick={() => setDarkMode((current) => !current)}
+            className="rounded-xl border border-slate-200 bg-white p-2 text-slate-600 hover:bg-slate-50"
+          >
+            {darkMode ? <Sun size={19} /> : <Moon size={19} />}
+          </button>
         </header>
 
         <main className="mx-auto max-w-[1500px] space-y-6 p-5 sm:p-8">
@@ -533,6 +575,7 @@ function App() {
               plan={plan}
               expenses={expenses}
               budgets={budgets}
+              funds={funds}
               totalIncome={totalIncome}
               totalExpenses={totalExpenses}
               totalFunds={totalFunds}
@@ -559,6 +602,7 @@ function App() {
               onCreateFund={handleCreateFund}
               onMovement={handleMovement}
               onCreateGoal={handleCreateGoal}
+              onChangeGoalPriority={handleChangeGoalPriority}
               onToggleGoal={handleToggleGoal}
             />
           )}
@@ -578,6 +622,7 @@ function Dashboard({
   plan,
   expenses,
   budgets,
+  funds,
   totalIncome,
   totalExpenses,
   totalFunds,
@@ -589,6 +634,7 @@ function Dashboard({
   plan: MonthlyPlan | null;
   expenses: Expense[];
   budgets: (MonthlyBudget & { color: string; spent: number })[];
+  funds: Fund[];
   totalIncome: number;
   totalExpenses: number;
   totalFunds: number;
@@ -627,8 +673,8 @@ function Dashboard({
       )}
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <SummaryCard title="Entradas do mês" value={currency(totalIncome)} detail="Renda normal + extra" icon={ArrowDownRight} color="blue" />
-        <SummaryCard title="Despesas realizadas" value={currency(totalExpenses)} detail={`${expenses.length} lançamento(s)`} icon={ReceiptText} color="violet" />
+        <SummaryCard title="Entradas do mês" value={currency(totalIncome)} detail="Renda normal + extra" icon={ArrowDownRight} color="blue" valueTone="positive" />
+        <SummaryCard title="Despesas realizadas" value={currency(totalExpenses)} detail={`${expenses.length} lançamento(s)`} icon={ReceiptText} color="violet" valueTone="negative" />
         <SummaryCard title="Saldo após despesas" value={currency(totalIncome - totalExpenses)} detail="Entradas menos despesas" icon={ArrowUpRight} color="emerald" />
         <SummaryCard title="Saldo dos fundos" value={currency(totalFunds)} detail="Saldo acumulado" icon={Wallet} color="amber" />
       </section>
@@ -701,7 +747,7 @@ function Dashboard({
                     <p className="text-sm font-semibold">{expense.description}</p>
                     <p className="text-xs text-slate-500">{expense.category}</p>
                   </div>
-                  <span className="text-sm font-bold">− {currency(Number(expense.amount))}</span>
+                  <span className="text-sm font-bold text-red-600">− {currency(Number(expense.amount))}</span>
                 </div>
               ))}
             </div>
@@ -711,6 +757,67 @@ function Dashboard({
           <p className="mb-3 text-sm text-slate-600">
             Saldo disponível nos fundos: <strong>{currency(totalFunds)}</strong>
           </p>
+          {funds.length === 0 ? (
+            <EmptyState message="Nenhum fundo cadastrado." />
+          ) : (
+            <div className="mb-5 space-y-4">
+              {funds.map((fund) => {
+                const priorityGoal = fund.goals
+                  .filter((goal) => goal.active)
+                  .sort((first, second) => first.priority - second.priority)[0];
+
+                if (!priorityGoal) {
+                  return (
+                    <div key={fund.id} className="rounded-xl border border-slate-200 p-4">
+                      <p className="font-semibold">{fund.name}</p>
+                      <p className="mt-1 text-sm text-slate-500">Nenhuma meta ativa neste fundo.</p>
+                    </div>
+                  );
+                }
+
+                const progress = Math.min(
+                  100,
+                  (priorityGoal.current_amount / priorityGoal.target_amount) * 100,
+                );
+
+                return (
+                  <div key={fund.id} className="flex gap-4 rounded-xl border border-slate-200 p-4">
+                    {priorityGoal.image_url ? (
+                      <img
+                        src={priorityGoal.image_url}
+                        alt={`Imagem da meta ${priorityGoal.name}`}
+                        className="h-24 w-24 shrink-0 rounded-xl bg-slate-100 object-contain p-1"
+                      />
+                    ) : (
+                      <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-xl bg-slate-100 text-center text-sm text-slate-500">
+                        Sem foto
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-slate-500">{fund.name} · 1ª prioridade</p>
+                          <p className="truncate text-base font-semibold">{priorityGoal.name}</p>
+                        </div>
+                        <span className="shrink-0 text-sm font-semibold text-emerald-600">
+                          {Math.round(progress)}%
+                        </span>
+                      </div>
+                      <div className="mt-3 h-2.5 overflow-hidden rounded-full bg-slate-100">
+                        <div
+                          className="h-full rounded-full bg-emerald-500"
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+                      <p className="mt-2 text-sm text-slate-500">
+                        {currency(priorityGoal.current_amount)} de {currency(priorityGoal.target_amount)}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
           <button type="button" onClick={() => onNavigate("Fundos e metas")} className="text-sm font-semibold text-blue-700 hover:underline">
             Gerenciar fundos e metas
           </button>
@@ -803,14 +910,18 @@ function FundsPage({
   onCreateFund,
   onMovement,
   onCreateGoal,
+  onChangeGoalPriority,
   onToggleGoal,
 }: {
   funds: Fund[];
   onCreateFund: (event: FormEvent<HTMLFormElement>) => void;
   onMovement: (event: FormEvent<HTMLFormElement>, fund: Fund) => void;
   onCreateGoal: (event: FormEvent<HTMLFormElement>) => void;
+  onChangeGoalPriority: (goal: Goal, priority: number) => void;
   onToggleGoal: (goal: Goal) => void;
 }) {
+  const [goalFundId, setGoalFundId] = useState<number | null>(null);
+  const selectedGoalFund = funds.find((fund) => fund.id === goalFundId) ?? funds[0];
   const activeGoals = funds.flatMap((fund) => fund.goals.filter((goal) => goal.active));
 
   return (
@@ -826,16 +937,41 @@ function FundsPage({
         </Card>
         <Card title="Criar meta" subtitle="Cada meta acompanha depósitos e resgates próprios">
           {funds.length === 0 ? <EmptyState message="Crie um fundo antes de cadastrar uma meta." /> : (
-            <form onSubmit={onCreateGoal} className="grid gap-4 sm:grid-cols-3">
+            <form onSubmit={onCreateGoal} encType="multipart/form-data" className="grid gap-4 sm:grid-cols-2">
               <Field label="Nome da meta" name="name" required maxLength={255} />
               <label className="grid gap-1.5 text-sm font-medium text-slate-700">
                 Fundo
-                <select name="balance_account_id" required className={inputClass}>
+                <select
+                  name="balance_account_id"
+                  required
+                  className={inputClass}
+                  value={selectedGoalFund?.id ?? ""}
+                  onChange={(event) => setGoalFundId(Number(event.target.value))}
+                >
                   {funds.map((fund) => <option key={fund.id} value={fund.id}>{fund.name}</option>)}
                 </select>
               </label>
               <Field label="Valor desejado" name="target_amount" type="number" min="0.01" step="0.01" required />
-              <button className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 sm:col-span-3">Criar meta</button>
+              <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                Prioridade no fundo
+                <select
+                  key={selectedGoalFund?.id ?? "no-fund"}
+                  name="priority"
+                  required
+                  className={inputClass}
+                  defaultValue={selectedGoalFund ? selectedGoalFund.goals.length + 1 : ""}
+                >
+                  {Array.from({ length: (selectedGoalFund?.goals.length ?? 0) + 1 }, (_, index) => (
+                    <option key={index + 1} value={index + 1}>{index + 1}ª prioridade</option>
+                  ))}
+                </select>
+              </label>
+              <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                Imagem da meta
+                <input name="image" type="file" accept="image/jpeg,image/png,image/webp,image/gif" className={inputClass} />
+                <span className="text-xs font-normal text-slate-500">JPEG, PNG, WebP ou GIF; até 5 MB.</span>
+              </label>
+              <button className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700 sm:col-span-2">Criar meta</button>
             </form>
           )}
         </Card>
@@ -873,9 +1009,31 @@ function FundsPage({
                     return (
                       <div key={goal.id} className="rounded-xl border border-slate-100 p-3">
                         <div className="flex items-start justify-between gap-3">
-                          <div>
-                            <p className="font-semibold">{goal.name} {!goal.active && <span className="text-xs font-normal text-slate-400">(arquivada)</span>}</p>
-                            <p className="text-xs text-slate-500">{currency(goal.current_amount)} de {currency(goal.target_amount)}</p>
+                          <div className="flex min-w-0 items-start gap-3">
+                            {goal.image_url && (
+                              <img
+                                src={goal.image_url}
+                                alt={`Imagem da meta ${goal.name}`}
+                                className="h-16 w-16 shrink-0 rounded-lg object-cover"
+                              />
+                            )}
+                            <div>
+                              <p className="font-semibold">{goal.name} {!goal.active && <span className="text-xs font-normal text-slate-400">(arquivada)</span>}</p>
+                              <p className="text-xs text-slate-500">{currency(goal.current_amount)} de {currency(goal.target_amount)}</p>
+                              <label className="mt-2 flex items-center gap-2 text-xs text-slate-500">
+                                Prioridade
+                                <select
+                                  aria-label={`Prioridade de ${goal.name}`}
+                                  className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs text-slate-700"
+                                  value={goal.priority}
+                                  onChange={(event) => onChangeGoalPriority(goal, Number(event.target.value))}
+                                >
+                                  {fund.goals.map((_, index) => (
+                                    <option key={index + 1} value={index + 1}>{index + 1}ª</option>
+                                  ))}
+                                </select>
+                              </label>
+                            </div>
                           </div>
                           <button type="button" onClick={() => onToggleGoal(goal)} className="text-xs font-semibold text-blue-700 hover:underline">
                             {goal.active ? "Arquivar" : "Reativar"}
@@ -1009,12 +1167,14 @@ function SummaryCard({
   detail,
   icon: Icon,
   color,
+  valueTone,
 }: {
   title: string;
   value: string;
   detail: string;
   icon: typeof Wallet;
   color: "blue" | "violet" | "emerald" | "amber";
+  valueTone?: "positive" | "negative";
 }) {
   const colors = {
     blue: "bg-blue-50 text-blue-600",
@@ -1028,7 +1188,7 @@ function SummaryCard({
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-sm font-medium text-slate-500">{title}</p>
-          <p className="mt-3 text-2xl font-bold">{value}</p>
+          <p className={`mt-3 text-2xl font-bold ${valueTone === "positive" ? "text-emerald-600" : valueTone === "negative" ? "text-red-600" : ""}`}>{value}</p>
         </div>
         <div className={`rounded-xl p-3 ${colors[color]}`}><Icon size={21} /></div>
       </div>

@@ -5,6 +5,9 @@ import tailwindcss from '@tailwindcss/vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    watch: {
+      usePolling: true,
+    },
     proxy: {
       '/api': {
         target: process.env.FINANCEIRO_API_PROXY_TARGET ?? 'http://127.0.0.1:8000',

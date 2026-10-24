@@ -20,6 +20,7 @@ Route::get('/funds', [FundController::class, 'index']);
 Route::post('/funds', [FundController::class, 'storeAccount']);
 Route::post('/funds/{account}/movements', [FundController::class, 'storeMovement']);
 Route::post('/goals', [FundController::class, 'storeGoal']);
+Route::get('/goals/{goal}/image', [FundController::class, 'showGoalImage']);
 Route::patch('/goals/{goal}', [FundController::class, 'updateGoal']);
 
 Route::get('/teste-json', function () {

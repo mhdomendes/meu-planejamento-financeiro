@@ -23,3 +23,101 @@ body {
   min-width: 320px;
   min-height: 100vh;
 }
+
+:root.dark {
+  color-scheme: dark;
+  color: #f1f5f9;
+  background: #0f172a;
+}
+
+:root.dark body {
+  color: #f1f5f9;
+  background: #0f172a;
+}
+
+:root.dark [class~="bg-[#f6f7fb]"],
+:root.dark [class~="bg-slate-50"] {
+  background-color: #0f172a;
+}
+
+:root.dark [class~="bg-white"],
+:root.dark [class~="bg-white/95"] {
+  background-color: #1e293b;
+}
+
+:root.dark [class~="bg-slate-100"] {
+  background-color: #334155;
+}
+
+:root.dark [class~="bg-blue-50"] {
+  background-color: #172554;
+}
+
+:root.dark [class~="bg-violet-50"] {
+  background-color: #2e1065;
+}
+
+:root.dark [class~="bg-emerald-50"] {
+  background-color: #052e24;
+}
+
+:root.dark [class~="bg-amber-50"] {
+  background-color: #451a03;
+}
+
+:root.dark [class~="bg-red-50"] {
+  background-color: #450a0a;
+}
+
+:root.dark [class~="text-slate-900"] {
+  color: #f1f5f9;
+}
+
+:root.dark [class~="text-slate-700"] {
+  color: #e2e8f0;
+}
+
+:root.dark [class~="text-slate-600"] {
+  color: #cbd5e1;
+}
+
+:root.dark [class~="text-slate-500"],
+:root.dark [class~="text-slate-400"] {
+  color: #94a3b8;
+}
+
+:root.dark [class~="text-blue-700"] {
+  color: #93c5fd;
+}
+
+:root.dark [class~="text-red-700"] {
+  color: #fca5a5;
+}
+
+:root.dark [class~="text-red-600"] {
+  color: #f87171;
+}
+
+:root.dark [class~="text-emerald-600"] {
+  color: #34d399;
+}
+
+:root.dark [class~="text-emerald-800"] {
+  color: #6ee7b7;
+}
+
+:root.dark [class~="border-slate-200"],
+:root.dark [class~="border-slate-200/80"],
+:root.dark [class~="border-slate-100"],
+:root.dark [class~="divide-slate-100"] {
+  border-color: #334155;
+}
+
+:root.dark [class~="border-blue-100"] {
+  border-color: #1e3a8a;
+}
+
+:root.dark [class~="hover:bg-slate-50"]:hover,
+:root.dark [class~="hover:bg-slate-100"]:hover {
+  background-color: #334155;
+}
