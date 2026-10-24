@@ -85,6 +85,7 @@ type Fund = {
 };
 
 type ApiResponse<T> = { data: T; message?: string };
+type RecurringIncome = { normal_income: number };
 
 const apiBase = import.meta.env.VITE_API_URL ?? "/api";
 const categoryColors = ["#2563eb", "#8b5cf6", "#10b981", "#f59e0b", "#ec4899"];
@@ -168,6 +169,7 @@ function App() {
   });
   const [activePage, setActivePage] = useState("Visão geral");
   const [plan, setPlan] = useState<MonthlyPlan | null>(null);
+  const [recurringNormalIncome, setRecurringNormalIncome] = useState(0);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [funds, setFunds] = useState<Fund[]>([]);
@@ -220,6 +222,14 @@ function App() {
         if (active) setError(cause.message);
       });
 
+    apiRequest<RecurringIncome>("/recurring-income")
+      .then((result) => {
+        if (active) setRecurringNormalIncome(Number(result.data.normal_income));
+      })
+      .catch((cause: Error) => {
+        if (active) setError(cause.message);
+      });
+
     return () => {
       active = false;
     };
@@ -229,9 +239,10 @@ function App() {
     let active = true;
 
     Promise.all([
-      apiRequest<MonthlyPlan | null>(`/monthly-plans/${month}`).then(
-        (result) => result.data,
-      ),
+      apiRequest<MonthlyPlan>("/monthly-plans/ensure", {
+        method: "POST",
+        body: JSON.stringify({ month }),
+      }).then((result) => result.data),
       apiRequest<Expense[]>(`/expenses?month=${month}`).then(
         (result) => result.data,
       ),
@@ -278,25 +289,54 @@ function App() {
     [expenses, plan],
   );
 
-  async function handleCreatePlan(event: FormEvent<HTMLFormElement>) {
+  async function handleUpdatePlan(event: FormEvent<HTMLFormElement>): Promise<boolean> {
+    event.preventDefault();
+    if (!plan) return false;
+
+    setError("");
+    setNotice("");
+    const values = new FormData(event.currentTarget);
+
+    try {
+      const result = await apiRequest<MonthlyPlan>(`/monthly-plans/${plan.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          normal_income: Number(values.get("normal_income")),
+          extra_income: Number(values.get("extra_income")),
+        }),
+      });
+      setPlan(result.data);
+      setNotice("Planejamento mensal atualizado.");
+      return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível atualizar o planejamento.");
+      return false;
+    }
+  }
+
+  async function handleSaveRecurringIncome(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
     setNotice("");
     const values = new FormData(event.currentTarget);
 
     try {
-      const result = await apiRequest<MonthlyPlan>("/monthly-plans", {
-        method: "POST",
+      const result = await apiRequest<RecurringIncome>("/recurring-income", {
+        method: "PUT",
         body: JSON.stringify({
-          month,
           normal_income: Number(values.get("normal_income")),
-          extra_income: Number(values.get("extra_income")),
         }),
       });
-      setPlan(result.data);
-      setNotice("Planejamento mensal criado com sucesso.");
+      setRecurringNormalIncome(Number(result.data.normal_income));
+
+      if (month > `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-01`) {
+        const updatedPlan = await apiRequest<MonthlyPlan | null>(`/monthly-plans/${month}`);
+        setPlan(updatedPlan.data);
+      }
+
+      setNotice("Renda normal recorrente atualizada. Os planejamentos futuros também foram ajustados.");
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Não foi possível criar o planejamento.");
+      setError(cause instanceof Error ? cause.message : "Não foi possível atualizar a renda recorrente.");
     }
   }
 
@@ -579,7 +619,7 @@ function App() {
               totalIncome={totalIncome}
               totalExpenses={totalExpenses}
               totalFunds={totalFunds}
-              onCreatePlan={handleCreatePlan}
+              onUpdatePlan={handleUpdatePlan}
               onNavigate={setActivePage}
             />
           )}
@@ -608,7 +648,12 @@ function App() {
           )}
 
           {activePage === "Configurações" && (
-            <SettingsPage categories={categories} onSave={handleSaveDistribution} />
+            <SettingsPage
+              categories={categories}
+              recurringNormalIncome={recurringNormalIncome}
+              onSave={handleSaveDistribution}
+              onSaveRecurringIncome={handleSaveRecurringIncome}
+            />
           )}
         </main>
       </div>
@@ -626,7 +671,7 @@ function Dashboard({
   totalIncome,
   totalExpenses,
   totalFunds,
-  onCreatePlan,
+  onUpdatePlan,
   onNavigate,
 }: {
   monthLabel: string;
@@ -638,9 +683,11 @@ function Dashboard({
   totalIncome: number;
   totalExpenses: number;
   totalFunds: number;
-  onCreatePlan: (event: FormEvent<HTMLFormElement>) => void;
+  onUpdatePlan: (event: FormEvent<HTMLFormElement>) => Promise<boolean>;
   onNavigate: (page: string) => void;
 }) {
+  const [editingPlan, setEditingPlan] = useState(false);
+
   return (
     <>
       <section className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
@@ -657,19 +704,60 @@ function Dashboard({
 
       {loading && <p className="text-sm text-slate-500">Carregando dados do mês...</p>}
       {!loading && !plan && (
-        <section className="rounded-2xl border border-blue-100 bg-white p-5 shadow-sm sm:p-6">
-          <h3 className="font-bold">Comece pelo planejamento do mês</h3>
-          <p className="mt-1 text-sm text-slate-500">
-            Informe suas entradas para distribuir a renda entre as categorias.
-          </p>
-          <form onSubmit={onCreatePlan} className="mt-5 grid gap-4 sm:grid-cols-3">
-            <Field label="Renda normal" name="normal_income" type="number" min="0" step="0.01" required />
-            <Field label="Renda extra" name="extra_income" type="number" min="0" step="0.01" defaultValue="0" required />
-            <button className="self-end rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700">
-              Criar planejamento
-            </button>
+        <p className="text-sm text-slate-500">
+          Não foi possível carregar o planejamento deste mês.
+        </p>
+      )}
+
+      {plan && !editingPlan && (
+        <button
+          type="button"
+          onClick={() => setEditingPlan(true)}
+          className="text-sm font-semibold text-blue-700 hover:underline"
+        >
+          Editar planejamento do mês
+        </button>
+      )}
+      {plan && editingPlan && (
+        <Card title="Editar planejamento do mês" subtitle={monthLabel}>
+          <form
+            onSubmit={async (event) => {
+              if (await onUpdatePlan(event)) setEditingPlan(false);
+            }}
+            className="grid gap-4 sm:grid-cols-3"
+          >
+            <Field
+              label="Renda normal"
+              name="normal_income"
+              type="number"
+              min="0"
+              step="0.01"
+              defaultValue={plan.normal_income}
+              required
+            />
+            <Field
+              label="Renda extra"
+              name="extra_income"
+              type="number"
+              min="0"
+              step="0.01"
+              defaultValue={plan.extra_income}
+              required
+            />
+            <div className="flex items-end gap-2">
+              <button className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700">
+                Salvar alterações
+              </button>
+              <button
+                type="button"
+                onClick={() => setEditingPlan(false)}
+                className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+            </div>
           </form>
-        </section>
+        </Card>
       )}
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -1074,16 +1162,40 @@ function FundsPage({
 
 function SettingsPage({
   categories,
+  recurringNormalIncome,
   onSave,
+  onSaveRecurringIncome,
 }: {
   categories: Category[];
+  recurringNormalIncome: number;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
+  onSaveRecurringIncome: (event: FormEvent<HTMLFormElement>) => void;
 }) {
   const activeCategories = categories.filter((category) => category.active);
 
   return (
     <>
       <PageIntro title="Configurações" subtitle="Defina como as entradas mensais serão distribuídas." />
+      <Card
+        title="Renda normal recorrente"
+        subtitle="Este valor será sugerido ao criar um planejamento e atualizado nos meses futuros já planejados."
+      >
+        <form onSubmit={onSaveRecurringIncome} className="grid gap-4 sm:grid-cols-[minmax(0,1fr)_auto]">
+          <Field
+            key={recurringNormalIncome}
+            label="Valor mensal padrão"
+            name="normal_income"
+            type="number"
+            min="0"
+            step="0.01"
+            defaultValue={recurringNormalIncome}
+            required
+          />
+          <button className="self-end rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700">
+            Salvar renda recorrente
+          </button>
+        </form>
+      </Card>
       <Card title="Distribuição por categoria" subtitle="A soma de cada coluna deve ser exatamente 100%.">
         {activeCategories.length === 0 ? <EmptyState message="Nenhuma categoria ativa foi cadastrada." /> : (
           <form onSubmit={onSave}>

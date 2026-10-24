@@ -120,4 +120,60 @@ class MonthlyPlanService
             return $plan->load('monthlyCategoryBudgets.category');
         });
     }
+
+    public function update(
+        MonthlyPlan $plan,
+        float $normalIncome,
+        float $extraIncome
+    ): MonthlyPlan {
+        if ($normalIncome < 0 || $extraIncome < 0) {
+            throw ValidationException::withMessages([
+                'income' => 'As entradas não podem ser negativas.',
+            ]);
+        }
+
+        return DB::transaction(function () use ($plan, $normalIncome, $extraIncome): MonthlyPlan {
+            $plan = MonthlyPlan::query()
+                ->lockForUpdate()
+                ->findOrFail($plan->id);
+            $budgets = $plan->monthlyCategoryBudgets()
+                ->orderBy('id')
+                ->get();
+
+            $normalAllocated = 0;
+            $extraAllocated = 0;
+            $lastIndex = $budgets->count() - 1;
+
+            foreach ($budgets as $index => $budget) {
+                if ($index === $lastIndex) {
+                    $normalAmount = round($normalIncome - $normalAllocated, 2);
+                    $extraAmount = round($extraIncome - $extraAllocated, 2);
+                } else {
+                    $normalAmount = round(
+                        $normalIncome * (float) $budget->normal_percentage / 100,
+                        2,
+                    );
+                    $extraAmount = round(
+                        $extraIncome * (float) $budget->extra_percentage / 100,
+                        2,
+                    );
+                    $normalAllocated += $normalAmount;
+                    $extraAllocated += $extraAmount;
+                }
+
+                $budget->update([
+                    'normal_amount' => $normalAmount,
+                    'extra_amount' => $extraAmount,
+                    'total_budget' => round($normalAmount + $extraAmount, 2),
+                ]);
+            }
+
+            $plan->update([
+                'normal_income' => $normalIncome,
+                'extra_income' => $extraIncome,
+            ]);
+
+            return $plan->load('monthlyCategoryBudgets.category');
+        });
+    }
 }

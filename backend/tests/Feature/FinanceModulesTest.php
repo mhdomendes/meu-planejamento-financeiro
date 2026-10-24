@@ -12,6 +12,7 @@ use Database\Seeders\CategorySeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Carbon;
 use Tests\TestCase;
 
 class FinanceModulesTest extends TestCase
@@ -76,6 +77,71 @@ class FinanceModulesTest extends TestCase
         $this->getJson('/api/monthly-plans/2026-10-01')
             ->assertOk()
             ->assertExactJson(['data' => null]);
+    }
+
+    public function test_it_updates_monthly_plan_income_and_recalculates_category_budgets(): void
+    {
+        $plan = app(MonthlyPlanService::class)->create('2026-11-01', 4500, 500);
+
+        $this->patchJson("/api/monthly-plans/{$plan->id}", [
+            'normal_income' => 6000,
+            'extra_income' => 1000,
+        ])->assertOk()
+            ->assertJsonPath('data.normal_income', '6000.00')
+            ->assertJsonPath('data.extra_income', '1000.00');
+
+        $this->assertEquals(
+            7000.00,
+            (float) $plan->fresh()->monthlyCategoryBudgets->sum('total_budget'),
+        );
+    }
+
+    public function test_recurring_normal_income_updates_future_plans_and_defaults_new_plans(): void
+    {
+        Carbon::setTestNow('2026-10-24 12:00:00');
+        try {
+            $past = app(MonthlyPlanService::class)->create('2026-09-01', 4000, 100);
+            $current = app(MonthlyPlanService::class)->create('2026-10-01', 4500, 200);
+            $future = app(MonthlyPlanService::class)->create('2026-11-01', 5000, 300);
+
+            $this->putJson('/api/recurring-income', [
+                'normal_income' => 5200,
+            ])->assertOk()
+                ->assertJsonPath('data.normal_income', '5200.00');
+
+            $this->assertEquals('4000.00', $past->fresh()->normal_income);
+            $this->assertEquals('4500.00', $current->fresh()->normal_income);
+            $this->assertEquals('5200.00', $future->fresh()->normal_income);
+            $this->assertEquals('300.00', $future->fresh()->extra_income);
+
+            $this->postJson('/api/monthly-plans', [
+                'month' => '2026-12-01',
+                'extra_income' => 0,
+            ])->assertCreated()
+                ->assertJsonPath('data.normal_income', '5200.00');
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
+    public function test_it_automatically_creates_a_monthly_plan_using_recurring_income(): void
+    {
+        $this->putJson('/api/recurring-income', [
+            'normal_income' => 4800,
+        ])->assertOk();
+
+        $firstResponse = $this->postJson('/api/monthly-plans/ensure', [
+            'month' => '2026-12-01',
+        ])->assertOk()
+            ->assertJsonPath('data.normal_income', '4800.00')
+            ->assertJsonPath('data.extra_income', '0.00');
+
+        $this->postJson('/api/monthly-plans/ensure', [
+            'month' => '2026-12-01',
+        ])->assertOk()
+            ->assertJsonPath('data.id', $firstResponse->json('data.id'));
+
+        $this->assertDatabaseCount('monthly_plans', 1);
     }
 
     public function test_it_rejects_expenses_for_categories_outside_the_plan(): void
