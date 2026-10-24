@@ -47,7 +47,7 @@ class MonthlyPlanTest extends TestCase
         );
 
         $this->assertDatabaseHas('monthly_plans', [
-            'month' => '2026-11-01',
+            'month' => '2026-11-01 00:00:00',
             'normal_income' => 4500,
             'extra_income' => 500,
         ]);
@@ -59,7 +59,6 @@ class MonthlyPlanTest extends TestCase
 
         $essentialsBudget = $plan->monthlyCategoryBudgets
             ->first(fn ($budget) => $budget->category->name === 'Despesas essenciais');
-
 
         $this->assertNotNull($essentialsBudget);
         $this->assertEquals(2250.00, (float) $essentialsBudget->total_budget);

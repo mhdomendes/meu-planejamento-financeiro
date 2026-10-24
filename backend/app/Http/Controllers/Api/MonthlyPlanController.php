@@ -7,7 +7,6 @@ use App\Models\MonthlyPlan;
 use App\Services\MonthlyPlanService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Validation\ValidationException;
 
 class MonthlyPlanController extends Controller
 {
@@ -17,8 +16,8 @@ class MonthlyPlanController extends Controller
     ): JsonResponse {
         $validated = $request->validate([
             'month' => ['required', 'date_format:Y-m-d'],
-            'normal_income' => ['required', 'numeric', 'min:0'],
-            'extra_income' => ['required', 'numeric', 'min:0'],
+            'normal_income' => ['required', 'numeric', 'decimal:0,2', 'min:0'],
+            'extra_income' => ['required', 'numeric', 'decimal:0,2', 'min:0'],
         ]);
 
         $plan = $monthlyPlanService->create(
@@ -60,10 +59,10 @@ class MonthlyPlanController extends Controller
             ->whereDate('month', $month)
             ->first();
 
-        if (!$plan) {
+        if (! $plan) {
             return response()->json([
-                'message' => 'Planejamento mensal não encontrado.',
-            ], 404);
+                'data' => null,
+            ]);
         }
 
         return response()->json([
@@ -86,4 +85,3 @@ class MonthlyPlanController extends Controller
         ]);
     }
 }
-

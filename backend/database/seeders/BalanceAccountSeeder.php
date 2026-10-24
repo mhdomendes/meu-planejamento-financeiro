@@ -2,8 +2,8 @@
 
 namespace Database\Seeders;
 
+use App\Models\BalanceAccount;
 use Illuminate\Database\Seeder;
-use Illuminate\Support\Facades\DB;
 
 class BalanceAccountSeeder extends Seeder
 {
@@ -15,16 +15,10 @@ class BalanceAccountSeeder extends Seeder
         ];
 
         foreach ($accounts as $name) {
-            DB::table('balance_accounts')->updateOrInsert(
+            BalanceAccount::query()->firstOrCreate(
                 ['name' => $name],
-                [
-                    'initial_balance' => 0,
-                    'updated_at' => now(),
-                    'created_at' => now(),
-                ]
+                ['initial_balance' => 0]
             );
         }
     }
 }
-
-
