@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Category;
 use App\Models\MonthlyPlan;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
@@ -174,6 +175,68 @@ class MonthlyPlanService
             ]);
 
             return $plan->load('monthlyCategoryBudgets.category');
+        });
+    }
+
+    public function refreshCurrentAndFutureDistribution(Collection $categories): void
+    {
+        $categoriesById = $categories->keyBy('id');
+        $currentMonth = \Carbon\Carbon::now()->startOfMonth()->toDateString();
+
+        DB::transaction(function () use ($categoriesById, $currentMonth): void {
+            MonthlyPlan::query()
+                ->whereDate('month', '>=', $currentMonth)
+                ->with('monthlyCategoryBudgets')
+                ->orderBy('month')
+                ->get()
+                ->each(function (MonthlyPlan $plan) use ($categoriesById): void {
+                    $budgets = $plan->monthlyCategoryBudgets
+                        ->sortBy('id')
+                        ->values();
+                    $normalAllocated = 0;
+                    $extraAllocated = 0;
+                    $lastIndex = $budgets->count() - 1;
+
+                    foreach ($budgets as $index => $budget) {
+                        $category = $categoriesById->get($budget->category_id);
+                        if (! $category) {
+                            continue;
+                        }
+
+                        $normalPercentage = (float) $category->normal_percentage;
+                        $extraPercentage = (float) $category->extra_percentage;
+
+                        if ($index === $lastIndex) {
+                            $normalAmount = round(
+                                (float) $plan->normal_income - $normalAllocated,
+                                2,
+                            );
+                            $extraAmount = round(
+                                (float) $plan->extra_income - $extraAllocated,
+                                2,
+                            );
+                        } else {
+                            $normalAmount = round(
+                                (float) $plan->normal_income * $normalPercentage / 100,
+                                2,
+                            );
+                            $extraAmount = round(
+                                (float) $plan->extra_income * $extraPercentage / 100,
+                                2,
+                            );
+                            $normalAllocated += $normalAmount;
+                            $extraAllocated += $extraAmount;
+                        }
+
+                        $budget->update([
+                            'normal_percentage' => $normalPercentage,
+                            'extra_percentage' => $extraPercentage,
+                            'normal_amount' => $normalAmount,
+                            'extra_amount' => $extraAmount,
+                            'total_budget' => round($normalAmount + $extraAmount, 2),
+                        ]);
+                    }
+                });
         });
     }
 }

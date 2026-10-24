@@ -294,6 +294,41 @@ class FundController extends Controller
         ]);
     }
 
+    public function destroyGoal(PurchaseGoal $goal): JsonResponse
+    {
+        $imagePath = $goal->image_url;
+
+        DB::transaction(function () use ($goal): void {
+            BalanceAccount::query()
+                ->lockForUpdate()
+                ->findOrFail($goal->balance_account_id);
+            $goal->refresh();
+
+            BalanceMovement::query()
+                ->where('purchase_goal_id', $goal->id)
+                ->update(['purchase_goal_id' => null]);
+
+            PurchaseGoal::query()
+                ->where('balance_account_id', $goal->balance_account_id)
+                ->where('priority', '>', $goal->priority)
+                ->decrement('priority');
+
+            $goal->delete();
+        });
+
+        if (
+            $this->isStoredGoalImage($imagePath) &&
+            ! Storage::disk('public')->delete($imagePath)
+        ) {
+            throw new RuntimeException('A meta foi excluída, mas não foi possível remover sua imagem.');
+        }
+
+        return response()->json([
+            'message' => 'Meta excluída com sucesso.',
+            'data' => null,
+        ]);
+    }
+
     private function accountBalance(BalanceAccount $account): float
     {
         return $this->accountBalanceCents($account) / 100;
@@ -350,6 +385,13 @@ class FundController extends Controller
             'current_amount' => $this->goalBalance($goal),
             'active' => $goal->active,
         ];
+    }
+
+    private function isStoredGoalImage(?string $path): bool
+    {
+        return $path !== null
+            && str_starts_with($path, 'goals/')
+            && basename($path) === substr($path, strlen('goals/'));
     }
 
     private function serializeMovement(BalanceMovement $movement): array

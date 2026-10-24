@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Category;
+use App\Services\MonthlyPlanService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -21,7 +22,10 @@ class CategoryController extends Controller
         ]);
     }
 
-    public function updateDistribution(Request $request): JsonResponse
+    public function updateDistribution(
+        Request $request,
+        MonthlyPlanService $monthlyPlanService
+    ): JsonResponse
     {
         $validated = $request->validate([
             'categories' => ['required', 'array', 'min:1'],
@@ -57,13 +61,17 @@ class CategoryController extends Controller
             ]);
         }
 
-        DB::transaction(function () use ($submitted): void {
+        DB::transaction(function () use ($submitted, $monthlyPlanService): void {
             foreach ($submitted as $id => $values) {
                 Category::query()->whereKey($id)->update([
                     'normal_percentage' => $values['normal_percentage'],
                     'extra_percentage' => $values['extra_percentage'],
                 ]);
             }
+
+            $monthlyPlanService->refreshCurrentAndFutureDistribution(
+                Category::query()->where('active', true)->orderBy('id')->get(),
+            );
         });
 
         return $this->index();

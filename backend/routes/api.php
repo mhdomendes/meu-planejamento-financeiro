@@ -27,6 +27,7 @@ Route::post('/funds/{account}/movements', [FundController::class, 'storeMovement
 Route::post('/goals', [FundController::class, 'storeGoal']);
 Route::get('/goals/{goal}/image', [FundController::class, 'showGoalImage']);
 Route::patch('/goals/{goal}', [FundController::class, 'updateGoal']);
+Route::delete('/goals/{goal}', [FundController::class, 'destroyGoal']);
 
 Route::get('/teste-json', function () {
     return response()->json([

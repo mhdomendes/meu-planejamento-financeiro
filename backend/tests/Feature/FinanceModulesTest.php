@@ -183,6 +183,45 @@ class FinanceModulesTest extends TestCase
             ->assertJsonCount(3, 'data');
     }
 
+    public function test_distribution_changes_refresh_current_and_future_plans_but_preserve_past_plans(): void
+    {
+        Carbon::setTestNow('2026-10-24 12:00:00');
+        try {
+            $pastPlan = app(MonthlyPlanService::class)->create('2026-09-01', 4500, 500);
+            $currentPlan = app(MonthlyPlanService::class)->create('2026-10-01', 4500, 500);
+            $futurePlan = app(MonthlyPlanService::class)->create('2026-11-01', 4500, 500);
+
+            $categories = Category::query()->where('active', true)->orderBy('id')->get();
+            $payload = $categories->map(fn (Category $category) => [
+                'id' => $category->id,
+                'normal_percentage' => match ($category->name) {
+                    'Despesas essenciais' => 50,
+                    'Estilo de vida' => 20,
+                    default => 30,
+                },
+                'extra_percentage' => $category->extra_percentage,
+            ])->all();
+
+            $this->putJson('/api/categories/distribution', ['categories' => $payload])
+                ->assertOk();
+
+            $pastBudget = $pastPlan->fresh()->monthlyCategoryBudgets
+                ->first(fn ($budget) => $budget->category->name === 'Despesas essenciais');
+            $currentBudget = $currentPlan->fresh()->monthlyCategoryBudgets
+                ->first(fn ($budget) => $budget->category->name === 'Despesas essenciais');
+            $futureBudget = $futurePlan->fresh()->monthlyCategoryBudgets
+                ->first(fn ($budget) => $budget->category->name === 'Despesas essenciais');
+
+            $this->assertEquals('45.00', $pastBudget->normal_percentage);
+            $this->assertEquals('50.00', $currentBudget->normal_percentage);
+            $this->assertEquals('2250.00', $currentBudget->normal_amount);
+            $this->assertEquals('50.00', $futureBudget->normal_percentage);
+            $this->assertEquals(5000.00, (float) $currentPlan->fresh()->monthlyCategoryBudgets->sum('total_budget'));
+        } finally {
+            Carbon::setTestNow();
+        }
+    }
+
     public function test_it_tracks_fund_and_goal_balances_and_prevents_overspending(): void
     {
         $account = BalanceAccount::query()->firstOrFail();
@@ -258,6 +297,48 @@ class FinanceModulesTest extends TestCase
             'id' => $firstGoalId,
             'priority' => 1,
         ]);
+    }
+
+    public function test_it_deletes_a_goal_and_preserves_movements_and_remaining_priorities(): void
+    {
+        Storage::fake('public');
+        $account = BalanceAccount::query()->firstOrFail();
+        $firstGoal = PurchaseGoal::query()->create([
+            'name' => 'Primeira meta',
+            'balance_account_id' => $account->id,
+            'target_amount' => 1000,
+            'priority' => 1,
+            'image_url' => 'goals/primeira.png',
+        ]);
+        $secondGoal = PurchaseGoal::query()->create([
+            'name' => 'Segunda meta',
+            'balance_account_id' => $account->id,
+            'target_amount' => 2000,
+            'priority' => 2,
+        ]);
+        Storage::disk('public')->put('goals/primeira.png', 'image');
+        $movement = BalanceMovement::query()->create([
+            'balance_account_id' => $account->id,
+            'purchase_goal_id' => $firstGoal->id,
+            'type' => 'deposit',
+            'amount' => 100,
+        ]);
+
+        $this->deleteJson("/api/goals/{$firstGoal->id}")
+            ->assertOk()
+            ->assertJsonPath('data', null);
+
+        $this->assertDatabaseMissing('purchase_goals', ['id' => $firstGoal->id]);
+        $this->assertDatabaseHas('purchase_goals', [
+            'id' => $secondGoal->id,
+            'priority' => 1,
+        ]);
+        $this->assertDatabaseHas('balance_movements', [
+            'id' => $movement->id,
+            'purchase_goal_id' => null,
+            'amount' => 100,
+        ]);
+        Storage::disk('public')->assertMissing('goals/primeira.png');
     }
 
     public function test_it_clears_existing_goals_without_deleting_the_movement_history(): void
