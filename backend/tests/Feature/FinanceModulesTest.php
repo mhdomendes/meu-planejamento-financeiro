@@ -417,6 +417,99 @@ class FinanceModulesTest extends TestCase
             ->assertJsonPath('data.0.balance', 250);
     }
 
+    public function test_it_cannot_complete_a_goal_before_reaching_its_target(): void
+    {
+        $account = BalanceAccount::query()->firstOrFail();
+        $goal = PurchaseGoal::query()->create([
+            'name' => 'Viagem',
+            'balance_account_id' => $account->id,
+            'target_amount' => 1000,
+            'priority' => 1,
+        ]);
+        BalanceMovement::query()->create([
+            'balance_account_id' => $account->id,
+            'purchase_goal_id' => $goal->id,
+            'type' => 'deposit',
+            'amount' => 999.99,
+        ]);
+
+        $this->postJson("/api/goals/{$goal->id}/complete")
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('goal');
+
+        $this->assertDatabaseHas('purchase_goals', ['id' => $goal->id]);
+        $this->assertDatabaseCount('balance_movements', 1);
+        $this->assertDatabaseHas('balance_accounts', [
+            'id' => $account->id,
+            'initial_balance' => 0,
+        ]);
+    }
+
+    public function test_it_completes_a_goal_from_the_fund_balance_and_deducts_its_target_amount(): void
+    {
+        Storage::fake('public');
+        $account = BalanceAccount::query()->firstOrFail();
+        $goal = PurchaseGoal::query()->create([
+            'name' => 'Viagem',
+            'balance_account_id' => $account->id,
+            'target_amount' => 1000,
+            'priority' => 1,
+            'image_url' => 'goals/viagem.png',
+        ]);
+        $nextGoal = PurchaseGoal::query()->create([
+            'name' => 'Notebook',
+            'balance_account_id' => $account->id,
+            'target_amount' => 2000,
+            'priority' => 2,
+        ]);
+        Storage::disk('public')->put('goals/viagem.png', 'image');
+        $deposit = BalanceMovement::query()->create([
+            'balance_account_id' => $account->id,
+            'purchase_goal_id' => $goal->id,
+            'type' => 'deposit',
+            'amount' => 800,
+        ]);
+        BalanceMovement::query()->create([
+            'balance_account_id' => $account->id,
+            'type' => 'deposit',
+            'amount' => 300,
+        ]);
+
+        $this->getJson('/api/funds')
+            ->assertOk()
+            ->assertJsonPath('data.0.balance', 1100)
+            ->assertJsonPath('data.0.goals.0.current_amount', 800);
+
+        $this->postJson("/api/goals/{$goal->id}/complete")
+            ->assertOk()
+            ->assertJsonPath('data', null);
+
+        $this->assertDatabaseMissing('purchase_goals', ['id' => $goal->id]);
+        $this->assertDatabaseHas('purchase_goals', [
+            'id' => $nextGoal->id,
+            'priority' => 1,
+        ]);
+        $this->assertDatabaseHas('balance_movements', [
+            'id' => $deposit->id,
+            'purchase_goal_id' => null,
+            'type' => 'deposit',
+            'amount' => 800,
+        ]);
+        $this->assertDatabaseHas('balance_movements', [
+            'balance_account_id' => $account->id,
+            'purchase_goal_id' => null,
+            'type' => 'withdrawal',
+            'amount' => 1000,
+            'description' => 'Conclusão da meta: Viagem',
+        ]);
+        Storage::disk('public')->assertMissing('goals/viagem.png');
+
+        $this->getJson('/api/funds')
+            ->assertOk()
+            ->assertJsonPath('data.0.balance', 100)
+            ->assertJsonCount(1, 'data.0.goals');
+    }
+
     public function test_it_orders_goals_within_a_fund_and_uploads_goal_images(): void
     {
         Storage::fake('public');
@@ -454,8 +547,14 @@ class FinanceModulesTest extends TestCase
             'priority' => 2,
         ]);
 
-        $this->patchJson("/api/goals/{$secondGoalId}", ['priority' => 2])
+        $this->patchJson("/api/goals/{$secondGoalId}", [
+            'name' => 'Viagem dos sonhos',
+            'target_amount' => 3000,
+            'priority' => 2,
+        ])
             ->assertOk()
+            ->assertJsonPath('data.name', 'Viagem dos sonhos')
+            ->assertJsonPath('data.target_amount', '3000.00')
             ->assertJsonPath('data.priority', 2);
 
         $this->assertDatabaseHas('purchase_goals', [

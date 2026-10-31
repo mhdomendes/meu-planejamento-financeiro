@@ -3,19 +3,34 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   CalendarDays,
+  CarFront,
   ChevronLeft,
   ChevronRight,
+  Clapperboard,
   CircleDollarSign,
+  Dumbbell,
+  GraduationCap,
+  HeartPulse,
+  House,
   LayoutDashboard,
   Moon,
+  PawPrint,
   Pencil,
+  Plane,
   Plus,
+  Receipt,
   ReceiptText,
+  ShoppingBag,
+  ShoppingCart,
   Settings,
   Sun,
   Trash2,
+  Utensils,
   Wallet,
+  Wifi,
+  Zap,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import type { FormEvent, InputHTMLAttributes, ReactNode } from "react";
 
 const DistributionChart = lazy(() => import("./DistributionChart"));
@@ -95,6 +110,33 @@ type RecurringIncome = { normal_income: number };
 const apiBase = import.meta.env.VITE_API_URL ?? "/api";
 const categoryColors = ["#2563eb", "#8b5cf6", "#10b981", "#f59e0b", "#ec4899"];
 const today = new Date();
+
+function expenseIconFor(expense: Pick<Expense, "description" | "category">): LucideIcon {
+  const text = `${expense.description} ${expense.category}`
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+
+  if (/\b(uber|taxi|gasolina|combustivel|onibus|metro|estacionamento|transporte|carro)\b/.test(text)) return CarFront;
+  if (/\b(internet|wifi|wi-fi|telefone|celular)\b/.test(text)) return Wifi;
+  if (/\b(energia|eletricidade|luz|agua|gas|conta|aluguel|condominio|casa|moradia)\b/.test(text)) return House;
+  if (/\b(farmacia|medico|consulta|saude|dentista|hospital|exame)\b/.test(text)) return HeartPulse;
+  if (/\b(escola|faculdade|curso|material escolar|mensalidade escolar)\b/.test(text)) return GraduationCap;
+  if (/\b(mercado|supermercado|feira|hortifruti|mercearia)\b/.test(text)) return ShoppingCart;
+  if (/\b(restaurante|almoco|jantar|lanche|cafe|padaria|comida|delivery)\b/.test(text)) return Utensils;
+  if (/\b(roupa|sapato|vestuario|loja|compra)\b/.test(text)) return ShoppingBag;
+  if (/\b(pet|animal|veterinario|racao)\b/.test(text)) return PawPrint;
+  if (/\b(viagem|hotel|passagem|aeroporto|ferias)\b/.test(text)) return Plane;
+  if (/\b(academia|esporte|treino|fitness)\b/.test(text)) return Dumbbell;
+  if (/\b(cinema|streaming|netflix|spotify|show|ingresso|assinatura)\b/.test(text)) return Clapperboard;
+  if (/\b(investimento|investimentos|aplicacao|reserva)\b/.test(text)) return Zap;
+
+  if (/estilo de vida/.test(text)) return ShoppingBag;
+  if (/investimento/.test(text)) return Zap;
+  if (/essenciais/.test(text)) return Receipt;
+
+  return ReceiptText;
+}
 
 function moveMonth(
   current: { year: number; month: number },
@@ -454,6 +496,33 @@ function App() {
     }
   }
 
+  async function handleUpdateGoal(
+    event: FormEvent<HTMLFormElement>,
+    goal: Goal,
+  ): Promise<boolean> {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+    const values = new FormData(event.currentTarget);
+    const image = values.get("image");
+    if (image instanceof File && image.size === 0) {
+      values.delete("image");
+    }
+
+    try {
+      await apiRequest<Goal>(`/goals/${goal.id}`, {
+        method: "PATCH",
+        body: values,
+      });
+      await loadFunds();
+      setNotice("Meta atualizada.");
+      return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível atualizar a meta.");
+      return false;
+    }
+  }
+
   async function handleChangeGoalPriority(goal: Goal, priority: number) {
     setError("");
     setNotice("");
@@ -467,6 +536,21 @@ function App() {
       setNotice("Prioridade da meta atualizada.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Não foi possível atualizar a prioridade.");
+    }
+  }
+
+  async function handleCompleteGoal(goal: Goal) {
+    if (!window.confirm(`Concluir "${goal.name}" e descontar ${currency(goal.current_amount)} do saldo?`)) return;
+
+    setError("");
+    setNotice("");
+
+    try {
+      await apiRequest<null>(`/goals/${goal.id}/complete`, { method: "POST" });
+      await loadFunds();
+      setNotice("Meta concluída e valor descontado do saldo.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível concluir a meta.");
     }
   }
 
@@ -646,7 +730,9 @@ function App() {
               funds={funds}
               onMovement={handleMovement}
               onCreateGoal={handleCreateGoal}
+              onUpdateGoal={handleUpdateGoal}
               onChangeGoalPriority={handleChangeGoalPriority}
+              onCompleteGoal={handleCompleteGoal}
               onDeleteGoal={handleDeleteGoal}
             />
           )}
@@ -837,15 +923,24 @@ function Dashboard({
             <EmptyState message="Nenhuma despesa lançada neste mês." action="Despesas" onAction={onNavigate} />
           ) : (
             <div className="divide-y divide-slate-100">
-              {expenses.slice(0, 5).map((expense) => (
-                <div key={expense.id} className="flex items-center justify-between gap-4 py-3">
-                  <div>
-                    <p className="text-sm font-semibold">{expense.description}</p>
-                    <p className="text-xs text-slate-500">{expense.category}</p>
+              {expenses.slice(0, 5).map((expense) => {
+                const Icon = expenseIconFor(expense);
+
+                return (
+                  <div key={expense.id} className="flex items-center justify-between gap-4 py-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="flex size-9 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-600">
+                        <Icon size={17} aria-hidden="true" />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold">{expense.description}</p>
+                        <p className="text-xs text-slate-500">{expense.category}</p>
+                      </div>
+                    </div>
+                    <span className="text-sm font-bold text-red-600">− {currency(Number(expense.amount))}</span>
                   </div>
-                  <span className="text-sm font-bold text-red-600">− {currency(Number(expense.amount))}</span>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </Card>
@@ -1103,46 +1198,63 @@ function ExpensesPage({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {expenses.map((expense) => (
-                  <tr
-                    key={expense.id}
-                    className="transition-colors hover:bg-slate-50/80"
-                    style={{ borderLeft: `4px solid ${colorForCategory(expense.category_id)}` }}
-                  >
-                    <td className="py-3 pl-3 font-medium">{expense.description}</td>
-                    <td className="py-3">
-                      <span
-                        className="rounded-full px-2.5 py-1 text-xs font-semibold"
-                        style={{
-                          color: colorForCategory(expense.category_id),
-                          backgroundColor: `${colorForCategory(expense.category_id)}1a`,
-                        }}
-                      >
-                        {expense.category}
-                      </span>
-                    </td>
-                    <td className="py-3 text-slate-600">
-                      {expense.recurrence_type === "recurring"
-                        ? expense.repeat_every_months === 3 ? "A cada 3 meses" : "Mensal"
-                        : "—"}
-                    </td>
-                    <td className="py-3 text-slate-600">
-                      {expense.recurrence_type === "installment"
-                        ? `${expense.installment_number}/${expense.installments_total}`
-                        : "—"}
-                    </td>
-                    <td className="py-3 text-slate-500">{new Date(`${expense.date}T12:00:00`).toLocaleDateString("pt-BR")}</td>
-                    <td className="py-3 text-right font-semibold">{currency(Number(expense.amount))}</td>
-                    <td className="py-3 text-right">
-                      <button type="button" onClick={() => startEditing(expense)} aria-label={`Editar ${expense.description}`} className="rounded-lg p-2 text-slate-400 hover:bg-blue-50 hover:text-blue-600">
-                        <Pencil size={16} />
-                      </button>
-                      <button type="button" onClick={() => onDelete(expense)} aria-label={`Excluir ${expense.description}`} className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600">
-                        <Trash2 size={16} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {expenses.map((expense) => {
+                  const Icon = expenseIconFor(expense);
+
+                  return (
+                    <tr
+                      key={expense.id}
+                      className="transition-colors hover:bg-slate-50/80"
+                      style={{ borderLeft: `4px solid ${colorForCategory(expense.category_id)}` }}
+                    >
+                      <td className="py-3 pl-3">
+                        <div className="flex items-center gap-3 font-medium">
+                          <span
+                            className="flex size-9 shrink-0 items-center justify-center rounded-full"
+                            style={{
+                              color: colorForCategory(expense.category_id),
+                              backgroundColor: `${colorForCategory(expense.category_id)}1a`,
+                            }}
+                          >
+                            <Icon size={17} aria-hidden="true" />
+                          </span>
+                          <span>{expense.description}</span>
+                        </div>
+                      </td>
+                      <td className="py-3">
+                        <span
+                          className="rounded-full px-2.5 py-1 text-xs font-semibold"
+                          style={{
+                            color: colorForCategory(expense.category_id),
+                            backgroundColor: `${colorForCategory(expense.category_id)}1a`,
+                          }}
+                        >
+                          {expense.category}
+                        </span>
+                      </td>
+                      <td className="py-3 text-slate-600">
+                        {expense.recurrence_type === "recurring"
+                          ? expense.repeat_every_months === 3 ? "A cada 3 meses" : "Mensal"
+                          : "—"}
+                      </td>
+                      <td className="py-3 text-slate-600">
+                        {expense.recurrence_type === "installment"
+                          ? `${expense.installment_number}/${expense.installments_total}`
+                          : "—"}
+                      </td>
+                      <td className="py-3 text-slate-500">{new Date(`${expense.date}T12:00:00`).toLocaleDateString("pt-BR")}</td>
+                      <td className="py-3 text-right font-semibold">{currency(Number(expense.amount))}</td>
+                      <td className="py-3 text-right">
+                        <button type="button" onClick={() => startEditing(expense)} aria-label={`Editar ${expense.description}`} className="rounded-lg p-2 text-slate-400 hover:bg-blue-50 hover:text-blue-600">
+                          <Pencil size={16} />
+                        </button>
+                        <button type="button" onClick={() => onDelete(expense)} aria-label={`Excluir ${expense.description}`} className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600">
+                          <Trash2 size={16} />
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1156,16 +1268,21 @@ function FundsPage({
   funds,
   onMovement,
   onCreateGoal,
+  onUpdateGoal,
   onChangeGoalPriority,
+  onCompleteGoal,
   onDeleteGoal,
 }: {
   funds: Fund[];
   onMovement: (event: FormEvent<HTMLFormElement>, fund: Fund) => void;
   onCreateGoal: (event: FormEvent<HTMLFormElement>) => void;
+  onUpdateGoal: (event: FormEvent<HTMLFormElement>, goal: Goal) => Promise<boolean>;
   onChangeGoalPriority: (goal: Goal, priority: number) => void;
+  onCompleteGoal: (goal: Goal) => void;
   onDeleteGoal: (goal: Goal) => void;
 }) {
   const [goalFundId, setGoalFundId] = useState<number | null>(null);
+  const [editingGoalId, setEditingGoalId] = useState<number | null>(null);
   const selectedGoalFund = funds.find((fund) => fund.id === goalFundId) ?? funds[0];
   const activeGoals = funds.flatMap((fund) => fund.goals.filter((goal) => goal.active));
 
@@ -1193,7 +1310,7 @@ function FundsPage({
               <label className="grid gap-1.5 text-sm font-medium text-slate-700">
                 Prioridade no fundo
                 <select
-                  key={selectedGoalFund?.id ?? "no-fund"}
+                  key={`${selectedGoalFund?.id ?? "no-fund"}-${selectedGoalFund?.goals.length ?? 0}`}
                   name="priority"
                   required
                   className={inputClass}
@@ -1271,16 +1388,65 @@ function FundsPage({
                               </label>
                             </div>
                           </div>
-                          <button type="button" onClick={() => onDeleteGoal(goal)} className="text-xs font-semibold text-red-600 hover:underline">
-                            Excluir
-                          </button>
+                          <div className="flex shrink-0 flex-col items-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setEditingGoalId(editingGoalId === goal.id ? null : goal.id)}
+                              aria-label={`Editar meta ${goal.name}`}
+                              className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:underline"
+                            >
+                              <Pencil size={14} />
+                              Editar
+                            </button>
+                            <button type="button" onClick={() => onDeleteGoal(goal)} className="text-xs font-semibold text-red-600 hover:underline">
+                              Excluir
+                            </button>
+                          </div>
                         </div>
+                        {editingGoalId === goal.id && (
+                          <form
+                            onSubmit={(event) => {
+                              void onUpdateGoal(event, goal).then((updated) => {
+                                if (updated) setEditingGoalId(null);
+                              });
+                            }}
+                            encType="multipart/form-data"
+                            className="mt-4 grid gap-3 border-t border-slate-100 pt-4 sm:grid-cols-2"
+                          >
+                            <Field label="Nome da meta" name="name" defaultValue={goal.name} required maxLength={255} />
+                            <Field label="Valor desejado" name="target_amount" type="number" min="0.01" step="0.01" defaultValue={goal.target_amount} required />
+                            <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                              Prioridade no fundo
+                              <select name="priority" defaultValue={goal.priority} className={inputClass}>
+                                {fund.goals.map((_, index) => (
+                                  <option key={index + 1} value={index + 1}>{index + 1}ª prioridade</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+                              Nova imagem (opcional)
+                              <input name="image" type="file" accept="image/jpeg,image/png,image/webp,image/gif" className={inputClass} />
+                            </label>
+                            <button className="rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700 sm:col-span-2">
+                              Salvar alterações
+                            </button>
+                          </form>
+                        )}
                         <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100">
                           <div className="h-full rounded-full bg-emerald-500" style={{ width: `${progress}%` }} />
                         </div>
                         <p className="mt-1 text-right text-xs font-semibold text-emerald-600">
                           {Math.round(progress)}% do objetivo
                         </p>
+                        {goal.active && progress >= 100 && (
+                          <button
+                            type="button"
+                            onClick={() => onCompleteGoal(goal)}
+                            className="mt-3 w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-700"
+                          >
+                            Concluir Meta
+                          </button>
+                        )}
                       </div>
                     );
                   })}

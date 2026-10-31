@@ -294,39 +294,91 @@ class FundController extends Controller
         ]);
     }
 
+    public function completeGoal(PurchaseGoal $goal): JsonResponse
+    {
+        $imagePath = DB::transaction(function () use ($goal): ?string {
+            $account = BalanceAccount::query()
+                ->lockForUpdate()
+                ->findOrFail($goal->balance_account_id);
+            $goal->refresh();
+
+            if (! $goal->active) {
+                throw ValidationException::withMessages([
+                    'goal' => 'Não é possível concluir uma meta arquivada.',
+                ]);
+            }
+
+            $amountCents = $this->toCents($goal->target_amount);
+
+            if ($this->accountBalanceCents($account) < $amountCents) {
+                throw ValidationException::withMessages([
+                    'goal' => 'O saldo do fundo precisa atingir 100% do valor da meta para concluí-la.',
+                ]);
+            }
+
+            $account->movements()->create([
+                'purchase_goal_id' => $goal->id,
+                'type' => 'withdrawal',
+                'amount' => number_format($amountCents / 100, 2, '.', ''),
+                'description' => "Conclusão da meta: {$goal->name}",
+            ]);
+
+            return $this->deleteGoalWithinTransaction($goal);
+        });
+
+        $this->deleteGoalImage($imagePath);
+
+        return response()->json([
+            'message' => 'Meta concluída e valor descontado do saldo.',
+            'data' => null,
+        ]);
+    }
+
     public function destroyGoal(PurchaseGoal $goal): JsonResponse
     {
-        $imagePath = $goal->image_url;
-
-        DB::transaction(function () use ($goal): void {
+        $imagePath = DB::transaction(function () use ($goal): ?string {
             BalanceAccount::query()
                 ->lockForUpdate()
                 ->findOrFail($goal->balance_account_id);
             $goal->refresh();
 
-            BalanceMovement::query()
-                ->where('purchase_goal_id', $goal->id)
-                ->update(['purchase_goal_id' => null]);
-
-            PurchaseGoal::query()
-                ->where('balance_account_id', $goal->balance_account_id)
-                ->where('priority', '>', $goal->priority)
-                ->decrement('priority');
-
-            $goal->delete();
+            return $this->deleteGoalWithinTransaction($goal);
         });
 
-        if (
-            $this->isStoredGoalImage($imagePath) &&
-            ! Storage::disk('public')->delete($imagePath)
-        ) {
-            throw new RuntimeException('A meta foi excluída, mas não foi possível remover sua imagem.');
-        }
+        $this->deleteGoalImage($imagePath);
 
         return response()->json([
             'message' => 'Meta excluída com sucesso.',
             'data' => null,
         ]);
+    }
+
+    private function deleteGoalWithinTransaction(PurchaseGoal $goal): ?string
+    {
+        $imagePath = $goal->image_url;
+
+        BalanceMovement::query()
+            ->where('purchase_goal_id', $goal->id)
+            ->update(['purchase_goal_id' => null]);
+
+        PurchaseGoal::query()
+            ->where('balance_account_id', $goal->balance_account_id)
+            ->where('priority', '>', $goal->priority)
+            ->decrement('priority');
+
+        $goal->delete();
+
+        return $imagePath;
+    }
+
+    private function deleteGoalImage(?string $imagePath): void
+    {
+        if (
+            $this->isStoredGoalImage($imagePath) &&
+            ! Storage::disk('public')->delete($imagePath)
+        ) {
+            throw new RuntimeException('A meta foi removida, mas não foi possível remover sua imagem.');
+        }
     }
 
     private function accountBalance(BalanceAccount $account): float
