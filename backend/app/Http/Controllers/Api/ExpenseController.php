@@ -140,6 +140,21 @@ class ExpenseController extends Controller
         ]);
     }
 
+    public function updatePaid(Request $request, Expense $expense): JsonResponse
+    {
+        $validated = $request->validate([
+            'paid' => ['required', 'boolean'],
+        ]);
+
+        $expense->update(['paid' => $validated['paid']]);
+        $expense->load(['category', 'monthlyPlan', 'recurringExpense']);
+
+        return response()->json([
+            'message' => 'Status de pagamento atualizado.',
+            'data' => $this->serialize($expense),
+        ]);
+    }
+
     public function destroy(Expense $expense): JsonResponse
     {
         DB::transaction(function () use ($expense): void {
@@ -163,11 +178,16 @@ class ExpenseController extends Controller
 
     private function validateExpense(Request $request, bool $updating = false): array
     {
+        $request->merge([
+            'payment_method' => $request->input('payment_method', 'pix'),
+        ]);
+
         return $request->validate([
             ...($updating ? [] : ['month' => ['required', 'date_format:Y-m-d']]),
             'category_id' => ['required', 'integer', 'exists:categories,id'],
             'description' => ['required', 'string', 'max:255'],
             'amount' => ['required', 'numeric', 'decimal:0,2', 'gt:0', 'max:9999999999.99'],
+            'payment_method' => ['required', Rule::in(['pix', 'credit_card'])],
             'recurrence_type' => [
                 $updating ? 'required' : 'sometimes',
                 Rule::in(['none', 'recurring', 'installment']),
@@ -228,6 +248,7 @@ class ExpenseController extends Controller
             'description' => $validated['description'],
             'category_id' => $validated['category_id'],
             'amount' => $validated['amount'],
+            'payment_method' => $validated['payment_method'],
             'type' => $type,
             'starts_on' => $startsOn,
             'ends_on' => $endsOn,
@@ -247,6 +268,8 @@ class ExpenseController extends Controller
             'recurring_expense_id' => $recurringExpense?->id,
             'description' => $validated['description'],
             'amount' => $validated['amount'],
+            'paid' => false,
+            'payment_method' => $validated['payment_method'],
         ]);
     }
 
@@ -256,6 +279,7 @@ class ExpenseController extends Controller
             'category_id' => $validated['category_id'],
             'description' => $validated['description'],
             'amount' => $validated['amount'],
+            'payment_method' => $validated['payment_method'],
         ])->save();
     }
 
@@ -294,6 +318,7 @@ class ExpenseController extends Controller
                     'category_id' => $recurringExpense->category_id,
                     'description' => $recurringExpense->description,
                     'amount' => $recurringExpense->amount,
+                    'payment_method' => $recurringExpense->payment_method,
                 ],
             );
         }
@@ -340,6 +365,8 @@ class ExpenseController extends Controller
             'id' => $expense->id,
             'description' => $expense->description,
             'amount' => $expense->amount,
+            'paid' => (bool) $expense->paid,
+            'payment_method' => $expense->payment_method,
             'category_id' => $expense->category_id,
             'category' => $expense->category->name,
             'month' => $expense->monthlyPlan->month->format('Y-m-d'),

@@ -13,12 +13,15 @@ class Expense extends Model
         'recurring_expense_id',
         'description',
         'amount',
+        'paid',
+        'payment_method',
     ];
 
     protected function casts(): array
     {
         return [
             'amount' => 'decimal:2',
+            'paid' => 'boolean',
         ];
     }
 

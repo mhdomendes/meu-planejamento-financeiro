@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Clapperboard,
   CircleDollarSign,
+  CreditCard,
   Dumbbell,
   GraduationCap,
   HeartPulse,
@@ -64,6 +65,8 @@ type Expense = {
   id: number;
   description: string;
   amount: number;
+  paid: boolean;
+  payment_method: "pix" | "credit_card";
   category_id: number;
   category: string;
   month: string;
@@ -411,6 +414,7 @@ function App() {
             category_id: Number(values.get("category_id")),
             description: values.get("description"),
             amount: Number(values.get("amount")),
+            payment_method: values.get("payment_method"),
             recurrence_type: values.get("recurrence_type"),
             repeat_every_months: Number(values.get("repeat_every_months") ?? 1),
             installments_total: values.get("installments_total")
@@ -443,6 +447,24 @@ function App() {
       setNotice("Despesa removida.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Não foi possível remover a despesa.");
+    }
+  }
+
+  async function handleToggleExpensePaid(expense: Expense, paid: boolean) {
+    setError("");
+    setNotice("");
+
+    try {
+      const result = await apiRequest<Expense>(`/expenses/${expense.id}/paid`, {
+        method: "PATCH",
+        body: JSON.stringify({ paid }),
+      });
+      setExpenses((current) =>
+        current.map((item) => item.id === result.data.id ? result.data : item),
+      );
+      setNotice(paid ? "Despesa marcada como paga." : "Despesa marcada como não paga.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível atualizar o pagamento da despesa.");
     }
   }
 
@@ -722,6 +744,7 @@ function App() {
               categories={categories}
               onSave={handleSaveExpense}
               onDelete={handleDeleteExpense}
+              onTogglePaid={handleToggleExpensePaid}
             />
           )}
 
@@ -850,9 +873,18 @@ function Dashboard({
         </Card>
       )}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <SummaryCard title="Entradas do mês" value={currency(totalIncome)} detail="Renda normal + extra" icon={ArrowDownRight} color="blue" valueTone="positive" />
         <SummaryCard title="Despesas realizadas" value={currency(totalExpenses)} detail={`${expenses.length} lançamento(s)`} icon={ReceiptText} color="violet" valueTone="negative" />
+        <SummaryCard
+          title="Despesas no cartão"
+          value={currency(expenses
+            .filter((expense) => expense.payment_method === "credit_card")
+            .reduce((total, expense) => total + Number(expense.amount), 0))}
+          detail="Total no cartão de crédito"
+          icon={CreditCard}
+          color="amber"
+        />
         <SummaryCard title="Saldo após despesas" value={currency(totalIncome - totalExpenses)} detail="Entradas menos despesas" icon={ArrowUpRight} color="emerald" />
         <SummaryCard title="Saldo dos fundos" value={currency(totalFunds)} detail="Saldo acumulado" icon={Wallet} color="amber" />
       </section>
@@ -1026,6 +1058,7 @@ function ExpensesPage({
   categories,
   onSave,
   onDelete,
+  onTogglePaid,
 }: {
   monthLabel: string;
   loading: boolean;
@@ -1037,9 +1070,11 @@ function ExpensesPage({
     editingExpense: Expense | null,
   ) => Promise<boolean>;
   onDelete: (expense: Expense) => void;
+  onTogglePaid: (expense: Expense, paid: boolean) => Promise<void>;
 }) {
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [recurrenceType, setRecurrenceType] = useState<Expense["recurrence_type"]>("none");
+  const [updatingPaidIds, setUpdatingPaidIds] = useState<Set<number>>(() => new Set());
   const expenseFormRef = useRef<HTMLFormElement>(null);
   const expenseCardRef = useRef<HTMLDivElement>(null);
   const availableCategories = plan
@@ -1139,6 +1174,17 @@ function ExpensesPage({
                 <option value="installment">Parcelado</option>
               </select>
             </label>
+            <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+              Forma de pagamento
+              <select
+                name="payment_method"
+                className={inputClass}
+                defaultValue={editingExpense?.payment_method ?? "pix"}
+              >
+                <option value="pix">PIX</option>
+                <option value="credit_card">Cartão de Crédito</option>
+              </select>
+            </label>
             {recurrenceType === "recurring" && (
               <label className="grid gap-1.5 text-sm font-medium text-slate-700">
                 Frequência
@@ -1192,8 +1238,10 @@ function ExpensesPage({
                   <th className="pb-3">Categoria</th>
                   <th className="pb-3">Recorrência</th>
                   <th className="pb-3">Parcelado</th>
+                  <th className="pb-3">Forma de Pagamento</th>
                   <th className="pb-3">Data</th>
                   <th className="pb-3 text-right">Valor</th>
+                  <th className="pb-3 text-center">Pago</th>
                   <th />
                 </tr>
               </thead>
@@ -1204,8 +1252,12 @@ function ExpensesPage({
                   return (
                     <tr
                       key={expense.id}
-                      className="transition-colors hover:bg-slate-50/80"
-                      style={{ borderLeft: `4px solid ${colorForCategory(expense.category_id)}` }}
+                      className="transition-colors"
+                      style={{
+                        borderLeft: `4px solid ${colorForCategory(expense.category_id)}`,
+                        outline: expense.paid ? "1px solid #16a34a" : undefined,
+                        outlineOffset: "-1px",
+                      }}
                     >
                       <td className="py-3 pl-3">
                         <div className="flex items-center gap-3 font-medium">
@@ -1242,8 +1294,34 @@ function ExpensesPage({
                           ? `${expense.installment_number}/${expense.installments_total}`
                           : "—"}
                       </td>
+                      <td className="py-3 text-slate-600">
+                        {expense.payment_method === "credit_card" ? "Cartão de Crédito" : "PIX"}
+                      </td>
                       <td className="py-3 text-slate-500">{new Date(`${expense.date}T12:00:00`).toLocaleDateString("pt-BR")}</td>
                       <td className="py-3 text-right font-semibold">{currency(Number(expense.amount))}</td>
+                      <td className="py-3 text-center">
+                        <label className={`inline-flex items-center gap-2 text-xs font-semibold ${expense.paid ? "text-green-700" : "text-slate-500"}`}>
+                          <input
+                            type="checkbox"
+                            checked={expense.paid}
+                            disabled={updatingPaidIds.has(expense.id)}
+                            onChange={(event) => {
+                              const paid = event.target.checked;
+                              setUpdatingPaidIds((current) => new Set(current).add(expense.id));
+                              void onTogglePaid(expense, paid).finally(() => {
+                                setUpdatingPaidIds((current) => {
+                                  const next = new Set(current);
+                                  next.delete(expense.id);
+                                  return next;
+                                });
+                              });
+                            }}
+                            aria-label={`${expense.paid ? "Marcar como não paga" : "Marcar como paga"}: ${expense.description}`}
+                            className="size-4 accent-green-600"
+                          />
+                          Paga
+                        </label>
+                      </td>
                       <td className="py-3 text-right">
                         <button type="button" onClick={() => startEditing(expense)} aria-label={`Editar ${expense.description}`} className="rounded-lg p-2 text-slate-400 hover:bg-blue-50 hover:text-blue-600">
                           <Pencil size={16} />
@@ -1586,7 +1664,7 @@ function SummaryCard({
   title: string;
   value: string;
   detail: string;
-  icon: typeof Wallet;
+  icon: LucideIcon;
   color: "blue" | "violet" | "emerald" | "amber";
   valueTone?: "positive" | "negative";
 }) {

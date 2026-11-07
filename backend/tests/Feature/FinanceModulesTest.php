@@ -41,16 +41,31 @@ class FinanceModulesTest extends TestCase
             'category_id' => $category->id,
             'description' => 'Conta de energia',
             'amount' => 145.50,
+            'payment_method' => 'credit_card',
         ])->assertCreated()
             ->assertJsonPath('data.category', 'Despesas essenciais')
-            ->assertJsonPath('data.amount', '145.50');
+            ->assertJsonPath('data.amount', '145.50')
+            ->assertJsonPath('data.payment_method', 'credit_card')
+            ->assertJsonPath('data.paid', false);
 
         $expenseId = $created->json('data.id');
+
+        $this->patchJson("/api/expenses/{$expenseId}/paid", [
+            'paid' => true,
+        ])->assertOk()
+            ->assertJsonPath('data.paid', true);
+
+        $this->assertDatabaseHas('expenses', [
+            'id' => $expenseId,
+            'paid' => true,
+            'payment_method' => 'credit_card',
+        ]);
 
         $this->getJson('/api/expenses?month=2026-11-01')
             ->assertOk()
             ->assertJsonCount(1, 'data')
-            ->assertJsonPath('data.0.description', 'Conta de energia');
+            ->assertJsonPath('data.0.description', 'Conta de energia')
+            ->assertJsonPath('data.0.paid', true);
 
         $this->deleteJson("/api/expenses/{$expenseId}")
             ->assertOk()
@@ -177,6 +192,7 @@ class FinanceModulesTest extends TestCase
             'category_id' => $category->id,
             'description' => 'Academia',
             'amount' => 80,
+            'payment_method' => 'credit_card',
             'recurrence_type' => 'recurring',
             'repeat_every_months' => 1,
         ])->assertCreated()
@@ -185,6 +201,7 @@ class FinanceModulesTest extends TestCase
         $this->assertDatabaseHas('expenses', [
             'monthly_plan_id' => MonthlyPlan::query()->whereDate('month', '2026-12-01')->value('id'),
             'description' => 'Academia',
+            'payment_method' => 'credit_card',
         ]);
 
         $quarterly = $this->postJson('/api/expenses', [
@@ -251,10 +268,12 @@ class FinanceModulesTest extends TestCase
             'category_id' => $category->id,
             'description' => 'Internet atualizado',
             'amount' => 120,
+            'payment_method' => 'credit_card',
             'recurrence_type' => 'recurring',
             'repeat_every_months' => 1,
         ])->assertOk()
-            ->assertJsonPath('data.description', 'Internet atualizado');
+            ->assertJsonPath('data.description', 'Internet atualizado')
+            ->assertJsonPath('data.payment_method', 'credit_card');
 
         $this->assertDatabaseHas('expenses', [
             'monthly_plan_id' => MonthlyPlan::query()->whereDate('month', '2026-11-01')->value('id'),
@@ -265,6 +284,7 @@ class FinanceModulesTest extends TestCase
             'monthly_plan_id' => MonthlyPlan::query()->whereDate('month', '2027-01-01')->value('id'),
             'description' => 'Internet atualizado',
             'amount' => '120.00',
+            'payment_method' => 'credit_card',
         ]);
     }
 

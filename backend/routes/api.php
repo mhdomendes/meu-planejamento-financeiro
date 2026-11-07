@@ -19,6 +19,7 @@ Route::put('/recurring-income', [RecurringIncomeController::class, 'update']);
 
 Route::get('/expenses', [ExpenseController::class, 'index']);
 Route::post('/expenses', [ExpenseController::class, 'store']);
+Route::patch('/expenses/{expense}/paid', [ExpenseController::class, 'updatePaid']);
 Route::patch('/expenses/{expense}', [ExpenseController::class, 'update']);
 Route::delete('/expenses/{expense}', [ExpenseController::class, 'destroy']);
 

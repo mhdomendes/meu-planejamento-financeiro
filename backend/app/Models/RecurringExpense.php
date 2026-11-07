@@ -12,6 +12,7 @@ class RecurringExpense extends Model
         'description',
         'category_id',
         'amount',
+        'payment_method',
         'type',
         'starts_on',
         'ends_on',
