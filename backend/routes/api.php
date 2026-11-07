@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\CategoryController;
 use App\Http\Controllers\Api\ExpenseController;
 use App\Http\Controllers\Api\FundController;
+use App\Http\Controllers\Api\InvestmentController;
 use App\Http\Controllers\Api\MonthlyPlanController;
 use App\Http\Controllers\Api\RecurringIncomeController;
 use Illuminate\Support\Facades\Route;
@@ -22,6 +23,12 @@ Route::post('/expenses', [ExpenseController::class, 'store']);
 Route::patch('/expenses/{expense}/paid', [ExpenseController::class, 'updatePaid']);
 Route::patch('/expenses/{expense}', [ExpenseController::class, 'update']);
 Route::delete('/expenses/{expense}', [ExpenseController::class, 'destroy']);
+
+Route::get('/investments', [InvestmentController::class, 'index']);
+Route::post('/investments', [InvestmentController::class, 'store']);
+Route::patch('/investments/{investment}', [InvestmentController::class, 'update']);
+Route::get('/investments/{investment}/logo', [InvestmentController::class, 'showLogo']);
+Route::delete('/investments/{investment}', [InvestmentController::class, 'destroy']);
 
 Route::get('/funds', [FundController::class, 'index']);
 Route::post('/funds', [FundController::class, 'storeAccount']);

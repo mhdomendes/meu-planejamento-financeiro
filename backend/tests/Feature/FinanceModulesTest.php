@@ -6,6 +6,7 @@ use App\Models\BalanceAccount;
 use App\Models\BalanceMovement;
 use App\Models\Category;
 use App\Models\Expense;
+use App\Models\Investment;
 use App\Models\MonthlyPlan;
 use App\Models\PurchaseGoal;
 use App\Services\MonthlyPlanService;
@@ -72,6 +73,88 @@ class FinanceModulesTest extends TestCase
             ->assertJsonPath('data', null);
 
         $this->assertDatabaseMissing('expenses', ['id' => $expenseId]);
+    }
+
+    public function test_it_creates_lists_updates_and_deletes_investments(): void
+    {
+        Storage::fake('public');
+        $logo = UploadedFile::fake()->image('logo.png');
+
+        $created = $this->post('/api/investments', [
+            'ticker' => 'PETR4',
+            'type' => 'acoes',
+            'quantity' => '10.50000000',
+            'quote_value' => '37.2500',
+            'ideal_percentage' => '15.00',
+            'logo' => $logo,
+        ])->assertCreated()
+            ->assertJsonPath('data.ticker', 'PETR4')
+            ->assertJsonPath('data.type', 'acoes');
+
+        $investmentId = $created->json('data.id');
+        $this->assertSame(
+            "/api/investments/{$investmentId}/logo",
+            $created->json('data.logo_url'),
+        );
+        $investment = Investment::query()->findOrFail($investmentId);
+        $logoPath = $investment->logo_path;
+        Storage::disk('public')->assertExists($logoPath);
+
+        $this->getJson('/api/investments')
+            ->assertOk()
+            ->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.quote_value', '37.2500')
+            ->assertJsonPath('data.0.ideal_percentage', '15.00');
+
+        $this->get("/api/investments/{$investmentId}/logo")->assertOk();
+
+        $this->patchJson("/api/investments/{$investmentId}", [
+            'ticker' => 'PETR4',
+            'type' => 'caixa',
+            'quantity' => '12',
+            'quote_value' => '38',
+            'ideal_percentage' => '20',
+        ])->assertOk()
+            ->assertJsonPath('data.type', 'caixa')
+            ->assertJsonPath('data.logo_url', "/api/investments/{$investmentId}/logo");
+
+        $this->assertSame($logoPath, $investment->fresh()->logo_path);
+
+        $replacementLogo = UploadedFile::fake()->image('replacement.png');
+        $this->post("/api/investments/{$investmentId}", [
+            '_method' => 'PATCH',
+            'ticker' => 'PETR4',
+            'type' => 'acoes',
+            'quantity' => '12',
+            'quote_value' => '38',
+            'ideal_percentage' => '20',
+            'logo' => $replacementLogo,
+        ])->assertOk()
+            ->assertJsonPath('data.type', 'acoes');
+
+        $replacementLogoPath = $investment->fresh()->logo_path;
+        $this->assertNotSame($logoPath, $replacementLogoPath);
+        Storage::disk('public')->assertExists($replacementLogoPath);
+        Storage::disk('public')->assertMissing($logoPath);
+
+        $this->deleteJson("/api/investments/{$investmentId}")
+            ->assertOk()
+            ->assertJsonPath('data', null);
+
+        Storage::disk('public')->assertMissing($replacementLogoPath);
+        $this->assertDatabaseMissing('investments', ['id' => $investmentId]);
+    }
+
+    public function test_it_rejects_an_invalid_investment_type_or_ideal_percentage(): void
+    {
+        $this->postJson('/api/investments', [
+            'ticker' => 'INVALID',
+            'type' => 'crypto',
+            'quantity' => 1,
+            'quote_value' => 10,
+            'ideal_percentage' => 120,
+        ])->assertUnprocessable()
+            ->assertJsonValidationErrors(['type', 'ideal_percentage']);
     }
 
     public function test_it_creates_and_fetches_a_monthly_plan_through_the_api(): void

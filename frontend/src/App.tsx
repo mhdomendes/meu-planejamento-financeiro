@@ -4,6 +4,7 @@ import {
   ArrowUpRight,
   CalendarDays,
   CarFront,
+  ChartPie,
   ChevronLeft,
   ChevronRight,
   Clapperboard,
@@ -35,6 +36,7 @@ import type { LucideIcon } from "lucide-react";
 import type { FormEvent, InputHTMLAttributes, ReactNode } from "react";
 
 const DistributionChart = lazy(() => import("./DistributionChart"));
+const InvestmentAllocationChart = lazy(() => import("./InvestmentAllocationChart"));
 
 type Category = {
   id: number;
@@ -105,6 +107,25 @@ type Fund = {
   balance: number;
   movements: Movement[];
   goals: Goal[];
+};
+
+type InvestmentType = "acoes" | "caixa" | "stock" | "btc";
+
+type Investment = {
+  id: number;
+  ticker: string;
+  type: InvestmentType;
+  quantity: number;
+  quote_value: number;
+  ideal_percentage: number;
+  logo_url: string | null;
+};
+
+const investmentTypeLabels: Record<InvestmentType, string> = {
+  acoes: "Ações",
+  caixa: "Caixa",
+  stock: "Stock",
+  btc: "BTC",
 };
 
 type ApiResponse<T> = { data: T; message?: string };
@@ -223,6 +244,8 @@ function App() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [funds, setFunds] = useState<Fund[]>([]);
+  const [investments, setInvestments] = useState<Investment[]>([]);
+  const [investmentsLoading, setInvestmentsLoading] = useState(true);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -278,6 +301,17 @@ function App() {
       })
       .catch((cause: Error) => {
         if (active) setError(cause.message);
+      });
+
+    apiRequest<Investment[]>("/investments")
+      .then((result) => {
+        if (active) setInvestments(result.data);
+      })
+      .catch((cause: Error) => {
+        if (active) setError(cause.message);
+      })
+      .finally(() => {
+        if (active) setInvestmentsLoading(false);
       });
 
     return () => {
@@ -447,6 +481,68 @@ function App() {
       setNotice("Despesa removida.");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Não foi possível remover a despesa.");
+    }
+  }
+
+  async function handleSaveInvestment(
+    event: FormEvent<HTMLFormElement>,
+    editingInvestment: Investment | null,
+  ): Promise<boolean> {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const logo = values.get("logo");
+
+    if (logo instanceof File && logo.size === 0) {
+      values.delete("logo");
+    }
+
+    if (editingInvestment) {
+      values.append("_method", "PATCH");
+    }
+
+    try {
+      const result = await apiRequest<Investment>(
+        editingInvestment ? `/investments/${editingInvestment.id}` : "/investments",
+        {
+          method: "POST",
+          body: values,
+        },
+      );
+      setInvestments((current) =>
+        editingInvestment
+          ? current.map((investment) =>
+              investment.id === result.data.id ? result.data : investment,
+            )
+          : [...current, result.data].sort((first, second) =>
+              first.ticker.localeCompare(second.ticker),
+            ),
+      );
+      if (!editingInvestment) form.reset();
+      setNotice(editingInvestment ? "Ativo atualizado." : "Ativo cadastrado.");
+      return true;
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível salvar o ativo.");
+      return false;
+    }
+  }
+
+  async function handleDeleteInvestment(investment: Investment) {
+    if (!window.confirm(`Deseja excluir o ativo "${investment.ticker}"?`)) return;
+
+    setError("");
+    setNotice("");
+
+    try {
+      await apiRequest<null>(`/investments/${investment.id}`, { method: "DELETE" });
+      setInvestments((current) =>
+        current.filter((item) => item.id !== investment.id),
+      );
+      setNotice("Ativo excluído.");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Não foi possível excluir o ativo.");
     }
   }
 
@@ -625,6 +721,7 @@ function App() {
     { name: "Despesas", icon: ReceiptText },
     { name: "Fundos e metas", icon: Wallet },
     { name: "Configurações", icon: Settings },
+    { name: "Investimentos", icon: ChartPie },
   ];
 
   return (
@@ -768,9 +865,460 @@ function App() {
               onSaveRecurringIncome={handleSaveRecurringIncome}
             />
           )}
+
+          {activePage === "Investimentos" && (
+            <InvestmentsPage
+              investments={investments}
+              loading={investmentsLoading}
+              onSave={handleSaveInvestment}
+              onDelete={handleDeleteInvestment}
+            />
+          )}
         </main>
       </div>
     </div>
+  );
+}
+
+function InvestmentsPage({
+  investments,
+  loading,
+  onSave,
+  onDelete,
+}: {
+  investments: Investment[];
+  loading: boolean;
+  onSave: (
+    event: FormEvent<HTMLFormElement>,
+    editingInvestment: Investment | null,
+  ) => Promise<boolean>;
+  onDelete: (investment: Investment) => void;
+}) {
+  const [editingInvestment, setEditingInvestment] = useState<Investment | null>(null);
+  const [investmentTypeFilter, setInvestmentTypeFilter] = useState<InvestmentType | "all">("all");
+
+  const allocation = useMemo(() => {
+    const classValues = new Map<InvestmentType, number>();
+    const idealPercentages: Record<InvestmentType, number> = {
+      acoes: 30,
+      stock: 40,
+      caixa: 20,
+      btc: 10,
+    };
+    const allocationTypes: InvestmentType[] = ["acoes", "stock", "caixa", "btc"];
+    const allocationLabels: Record<InvestmentType, string> = {
+      acoes: "Ações",
+      stock: "Stocks",
+      caixa: "Caixa",
+      btc: "Cripto",
+    };
+    let totalValue = 0;
+
+    for (const investment of investments) {
+      const value = Number(investment.quantity) * Number(investment.quote_value);
+      totalValue += value;
+      classValues.set(
+        investment.type,
+        (classValues.get(investment.type) ?? 0) + value,
+      );
+    }
+
+    const colors: Record<InvestmentType, string> = {
+      acoes: "#2563eb",
+      caixa: "#10b981",
+      stock: "#8b5cf6",
+      btc: "#f59e0b",
+    };
+    const classes = allocationTypes.map((type) => {
+      const value = classValues.get(type) ?? 0;
+      const percentage = totalValue > 0 ? (value / totalValue) * 100 : 0;
+      const differencePercentage = percentage - idealPercentages[type];
+      const differenceValue = value - (totalValue * idealPercentages[type]) / 100;
+
+      return {
+        type,
+        name: allocationLabels[type],
+        value,
+        percentage,
+        idealPercentage: idealPercentages[type],
+        differencePercentage,
+        differenceValue,
+        color: colors[type],
+      };
+    });
+
+    return { totalValue, classes };
+  }, [investments]);
+
+  const filteredInvestments = useMemo(
+    () => investmentTypeFilter === "all"
+      ? investments
+      : investments.filter((investment) => investment.type === investmentTypeFilter),
+    [investmentTypeFilter, investments],
+  );
+  const filteredTotals = useMemo(() => {
+    const quantity = filteredInvestments.reduce(
+      (total, investment) => total + Number(investment.quantity),
+      0,
+    );
+    const quoteValue = filteredInvestments.reduce(
+      (total, investment) => total + Number(investment.quote_value),
+      0,
+    );
+    const totalValue = filteredInvestments.reduce(
+      (total, investment) => total + Number(investment.quantity) * Number(investment.quote_value),
+      0,
+    );
+    const idealPercentage = filteredInvestments.reduce(
+      (total, investment) => total + Number(investment.ideal_percentage),
+      0,
+    );
+
+    return {
+      quantity,
+      quoteValue,
+      totalValue,
+      idealPercentage,
+      currentPercentage: allocation.totalValue > 0
+        ? (totalValue / allocation.totalValue) * 100
+        : 0,
+    };
+  }, [allocation.totalValue, filteredInvestments]);
+
+  return (
+    <>
+      <PageIntro
+        title="Investimentos"
+        subtitle="Acompanhe seus ativos e a distribuição da carteira."
+      />
+
+      <Card
+        title={editingInvestment ? "Editar ativo" : "Cadastrar ativo"}
+        subtitle="Os valores cadastrados são usados apenas para visualizar a carteira."
+      >
+        <form
+          key={editingInvestment?.id ?? "new-investment"}
+          onSubmit={(event) => {
+            void onSave(event, editingInvestment).then((saved) => {
+              if (saved) setEditingInvestment(null);
+            });
+          }}
+          encType="multipart/form-data"
+          className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3"
+        >
+          <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+            Ticket
+            <input
+              name="ticker"
+              type="text"
+              maxLength={20}
+              required
+              defaultValue={editingInvestment?.ticker}
+              className={inputClass}
+              placeholder="Ex.: PETR4"
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+            Tipo
+            <select
+              name="type"
+              required
+              defaultValue={editingInvestment?.type ?? "acoes"}
+              className={inputClass}
+            >
+              {(Object.entries(investmentTypeLabels) as [InvestmentType, string][]).map(
+                ([type, label]) => <option key={type} value={type}>{label}</option>,
+              )}
+            </select>
+          </label>
+          <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+            Quantidade
+            <input
+              name="quantity"
+              type="number"
+              min="0"
+              step="0.00000001"
+              required
+              defaultValue={editingInvestment?.quantity}
+              className={inputClass}
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+            Valor da cota (R$)
+            <input
+              name="quote_value"
+              type="number"
+              min="0"
+              step="0.0001"
+              required
+              defaultValue={editingInvestment?.quote_value}
+              className={inputClass}
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+            % ideal
+            <input
+              name="ideal_percentage"
+              type="number"
+              min="0"
+              max="100"
+              step="0.01"
+              required
+              defaultValue={editingInvestment?.ideal_percentage}
+              className={inputClass}
+            />
+          </label>
+          <label className="grid gap-1.5 text-sm font-medium text-slate-700">
+            Logo (opcional)
+            <input
+              name="logo"
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif"
+              className={inputClass}
+            />
+          </label>
+          {editingInvestment?.logo_url && (
+            <div className="flex items-center gap-3 text-sm text-slate-500 sm:col-span-2 xl:col-span-3">
+              <img
+                src={editingInvestment.logo_url}
+                alt={`Logo de ${editingInvestment.ticker}`}
+                className="size-10 rounded-full border border-slate-200 object-contain p-1"
+              />
+              Selecione uma nova imagem para substituir o logo atual.
+            </div>
+          )}
+          <div className="flex items-end gap-2 sm:col-span-2 xl:col-span-3">
+            <button className="rounded-xl bg-blue-600 px-4 py-3 text-sm font-semibold text-white hover:bg-blue-700">
+              {editingInvestment ? <Pencil size={16} className="mr-1 inline" /> : <Plus size={16} className="mr-1 inline" />}
+              {editingInvestment ? "Salvar edição" : "Adicionar ativo"}
+            </button>
+            {editingInvestment && (
+              <button
+                type="button"
+                onClick={() => setEditingInvestment(null)}
+                className="rounded-xl border border-slate-200 px-4 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+              >
+                Cancelar
+              </button>
+            )}
+          </div>
+        </form>
+      </Card>
+
+      <Card title="Alocação por classe" subtitle="Distribuição atual comparada com a alocação ideal padrão">
+        {loading ? (
+          <EmptyState message="Carregando investimentos..." />
+        ) : allocation.totalValue <= 0 ? (
+          <EmptyState message="Cadastre ativos com quantidade e valor de cota para visualizar a alocação." />
+        ) : (
+          <div className="grid items-center gap-5 md:grid-cols-2">
+            <Suspense fallback={<div className="h-64 animate-pulse rounded-xl bg-slate-100" />}>
+              <InvestmentAllocationChart data={allocation.classes} />
+            </Suspense>
+            <div className="space-y-4">
+              {allocation.classes.map((item) => (
+                <div key={item.type} className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span
+                      className="size-3 shrink-0 rounded-full"
+                      style={{ backgroundColor: item.color }}
+                    />
+                    <span className="truncate text-sm font-medium">{item.name}</span>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className="text-sm font-semibold">{item.percentage.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%</p>
+                    <p className="text-xs text-slate-500">{currency(item.value)}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Ideal {item.idealPercentage.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%
+                    </p>
+                    <p className={`text-xs ${
+                      item.differencePercentage < 0
+                        ? "font-bold text-red-600"
+                        : item.differencePercentage > 0
+                          ? "font-medium text-blue-600"
+                          : "font-medium text-slate-500"
+                    }`}>
+                      {
+                        item.differencePercentage > 0
+                          ? `${item.differencePercentage.toLocaleString("pt-BR", { maximumFractionDigits: 2 })} p.p. acima`
+                          : item.differencePercentage < 0
+                            ? `${Math.abs(item.differencePercentage).toLocaleString("pt-BR", { maximumFractionDigits: 2 })} p.p. abaixo`
+                            : "no percentual ideal"
+                      }
+                    </p>
+                    <p className={`text-xs font-medium ${
+                      item.differenceValue > 0
+                        ? "font-medium text-blue-600"
+                        : item.differenceValue < 0
+                          ? "font-bold text-red-600"
+                          : "font-medium text-slate-500"
+                    }`}>
+                      {item.differenceValue > 0
+                        ? `${currency(item.differenceValue)} acima do ideal`
+                        : item.differenceValue < 0
+                          ? `${currency(Math.abs(item.differenceValue))} abaixo do ideal`
+                          : "Valor no ideal"}
+                    </p>
+                  </div>
+                </div>
+              ))}
+              <div className="border-t border-slate-200 pt-3">
+                <p className="text-xs text-slate-500">Valor total da carteira</p>
+                <p className="mt-1 text-lg font-bold">{currency(allocation.totalValue)}</p>
+              </div>
+            </div>
+          </div>
+        )}
+      </Card>
+
+      <Card title="Ativos cadastrados" subtitle={`${filteredInvestments.length} de ${investments.length} ativo(s)`}>
+        {loading ? <EmptyState message="Carregando ativos..." /> : investments.length === 0 ? (
+          <EmptyState message="Nenhum ativo cadastrado." />
+        ) : (
+          <>
+            <label className="mb-4 flex max-w-xs items-center gap-3 text-sm font-medium text-slate-700">
+              Filtrar por tipo
+              <select
+                value={investmentTypeFilter}
+                onChange={(event) => setInvestmentTypeFilter(event.target.value as InvestmentType | "all")}
+                className={inputClass}
+              >
+                <option value="all">Todos os tipos</option>
+                {(Object.entries(investmentTypeLabels) as [InvestmentType, string][]).map(
+                  ([type, label]) => <option key={type} value={type}>{label}</option>,
+                )}
+              </select>
+            </label>
+            {filteredInvestments.length === 0 ? (
+              <EmptyState message="Nenhum ativo encontrado para este tipo." />
+            ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1100px] text-left text-sm">
+              <thead className="text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="pb-3 pl-3">Ativo</th>
+                  <th className="pb-3">Tipo</th>
+                  <th className="pb-3 text-right">Quantidade</th>
+                  <th className="pb-3 text-right">Valor da cota</th>
+                  <th className="pb-3 text-right">Valor total</th>
+                  <th className="pb-3 text-right">% ideal</th>
+                  <th className="pb-3 text-right">% da carteira</th>
+                  <th className="pb-3 text-right">Diferença</th>
+                  <th />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100">
+                {filteredInvestments.map((investment) => {
+                  const currentPercentage = allocation.totalValue > 0
+                    ? (Number(investment.quantity) * Number(investment.quote_value) / allocation.totalValue) * 100
+                    : 0;
+                  const difference = currentPercentage - Number(investment.ideal_percentage);
+
+                  return (
+                  <tr key={investment.id} className="transition-colors">
+                    <td className="py-3 pl-3">
+                      <div className="flex items-center gap-3 font-semibold">
+                        {investment.logo_url ? (
+                          <img
+                            src={investment.logo_url}
+                            alt={`Logo de ${investment.ticker}`}
+                            className="size-9 rounded-full border border-slate-200 object-contain p-1"
+                          />
+                        ) : (
+                          <span className="flex size-9 items-center justify-center rounded-full bg-blue-50 text-blue-700">
+                            <ChartPie size={17} aria-hidden="true" />
+                          </span>
+                        )}
+                        {investment.ticker}
+                      </div>
+                    </td>
+                    <td className="py-3 text-slate-600">{investmentTypeLabels[investment.type]}</td>
+                    <td className="py-3 text-right text-slate-600">
+                      {Number(investment.quantity).toLocaleString("pt-BR", { maximumFractionDigits: 8 })}
+                    </td>
+                    <td className="py-3 text-right text-slate-600">{currency(Number(investment.quote_value))}</td>
+                    <td className="py-3 text-right font-semibold">
+                      {currency(Number(investment.quantity) * Number(investment.quote_value))}
+                    </td>
+                    <td className="py-3 text-right text-slate-600">
+                      {Number(investment.ideal_percentage).toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%
+                    </td>
+                    <td className="py-3 text-right text-slate-600">
+                      {currentPercentage.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%
+                    </td>
+                    <td className={`py-3 text-right ${
+                      difference < 0
+                        ? "font-bold text-red-600"
+                        : difference > 0
+                          ? "font-medium text-blue-600"
+                          : "font-medium text-slate-500"
+                    }`}>
+                      {difference > 0 ? "+" : ""}
+                      {difference.toLocaleString("pt-BR", { maximumFractionDigits: 2 })} p.p.
+                    </td>
+                    <td className="py-3 text-right">
+                      <button
+                        type="button"
+                        onClick={() => setEditingInvestment(investment)}
+                        aria-label={`Editar ${investment.ticker}`}
+                        className="rounded-lg p-2 text-slate-400 hover:bg-blue-50 hover:text-blue-600"
+                      >
+                        <Pencil size={16} />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onDelete(investment)}
+                        aria-label={`Excluir ${investment.ticker}`}
+                        className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    </td>
+                  </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot className="border-t-2 border-slate-200 bg-slate-50 font-semibold">
+                <tr>
+                  <td className="py-3 pl-3">{filteredInvestments.length} ativo(s)</td>
+                  <td className="py-3 text-slate-600">Soma</td>
+                  <td className="py-3 text-right">
+                    {filteredTotals.quantity.toLocaleString("pt-BR", { maximumFractionDigits: 8 })}
+                  </td>
+                  <td className="py-3 text-right">{currency(filteredTotals.quoteValue)}</td>
+                  <td className="py-3 text-right">{currency(filteredTotals.totalValue)}</td>
+                  <td className="py-3 text-right">
+                    <span className="block">
+                      {filteredTotals.idealPercentage.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}% ideal
+                    </span>
+                    <span className="block text-xs font-medium text-slate-500">
+                      {filteredTotals.currentPercentage.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}% atual
+                    </span>
+                  </td>
+                  <td className="py-3 text-right">
+                    {filteredTotals.currentPercentage.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}%
+                  </td>
+                  <td className={`py-3 text-right ${
+                    filteredTotals.currentPercentage - filteredTotals.idealPercentage < 0
+                      ? "font-bold text-red-600"
+                      : filteredTotals.currentPercentage - filteredTotals.idealPercentage > 0
+                        ? "font-medium text-blue-600"
+                        : "font-medium text-slate-500"
+                  }`}>
+                    {filteredTotals.currentPercentage - filteredTotals.idealPercentage > 0 ? "+" : ""}
+                    {(filteredTotals.currentPercentage - filteredTotals.idealPercentage)
+                      .toLocaleString("pt-BR", { maximumFractionDigits: 2 })} p.p.
+                  </td>
+                  <td />
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+            )}
+          </>
+        )}
+      </Card>
+    </>
   );
 }
 
